@@ -10,7 +10,7 @@
 
 import { beep, say } from './feedback.js';
 
-const WAKE_WORDS = ['hey armbot', 'hey arm bot', 'เฮ้ อาร์มบอท', 'เฮ้อาร์มบอท', 'อาร์มบอท', 'อาร์ม บอท', 'armbot'];
+const WAKE_WORDS = ['hey amy', 'hey amy', 'เฮ้ เอมี่', 'เฮ้อาร์มบอท', 'อาร์มบอท', 'อาร์ม บอท', 'armbot'];
 const COMMAND_MS = 8000;
 
 const Recognition = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition);
@@ -54,7 +54,7 @@ export function createVoice({ findItem, order }) {
     if (message) v.message = message;
     clearTimeout(timer);
     if (mode === 'active') {
-      timer = setTimeout(() => setMode('standby', 'ไม่ได้ยินคำสั่ง พูด "Hey Armbot" อีกครั้ง'), COMMAND_MS);
+      timer = setTimeout(() => setMode('standby', 'ไม่ได้ยินคำสั่ง พูด "Hey Amy" อีกครั้ง'), COMMAND_MS);
     }
   }
 
@@ -133,7 +133,7 @@ export function createVoice({ findItem, order }) {
     }
     v.enabled = true;
     v.error = '';
-    setMode('standby', 'พูด "Hey Armbot" เพื่อสั่งงาน');
+    setMode('standby', 'พูด "Hey Amy" เพื่อสั่งงาน');
     start();
   }
 
