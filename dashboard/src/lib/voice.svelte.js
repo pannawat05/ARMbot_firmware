@@ -10,7 +10,7 @@
 
 import { beep, say } from './feedback.js';
 
-const WAKE_WORDS = ['hey amy', 'hey amy', 'เฮ้ เอมี่', 'เฮ้อาร์มบอท', 'อาร์มบอท', 'อาร์ม บอท', 'armbot'];
+const WAKE_WORDS = ['hey amy', 'hey amy', 'เฮ้เอมิ', 'เฮ้อาร์มบอท', 'อาร์มบอท', 'อาร์ม บอท', 'armbot'];
 const COMMAND_MS = 8000;
 
 const Recognition = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition);
