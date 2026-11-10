@@ -17,6 +17,8 @@
   let camera = $state(null); // cloud mode: latest snapshot from the Pi
   let toast = $state('');
   let scanning = $state(false);
+  let scanOnly = $state(false);
+  let lastScannedCode = $state('');
   let search = $state('');
   let theme = $state(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
   const media = window.matchMedia('(max-width: 820px)');
@@ -56,6 +58,21 @@
 
   function byCode(code) {
     beep(1200, 80);
+    order({ barcode: code, source: 'barcode' }).catch(() => show(`ไม่พบบาร์โค้ด ${code}`));
+  }
+
+  function startScan(testOnly = false) {
+    scanOnly = testOnly;
+    scanning = true;
+  }
+
+  function onBarcodeScanned(code) {
+    scanning = false;
+    beep(1200, 80);
+    if (scanOnly) {
+      lastScannedCode = code;
+      return;
+    }
     order({ barcode: code, source: 'barcode' }).catch(() => show(`ไม่พบบาร์โค้ด ${code}`));
   }
 
@@ -120,7 +137,13 @@
       <VoiceBar {voice} compact />
     </section>
     <section class="bottom">
-      <button class="scan" onclick={() => (scanning = true)}>สแกนบาร์โค้ด</button>
+      <div class="scan-actions">
+        <button class="scan" onclick={() => startScan()}>สแกนบาร์โค้ดเพื่อสั่งหยิบ</button>
+        <button onclick={() => startScan(true)}>ทดลองสแกน (ไม่สั่งแขนกล)</button>
+      </div>
+      {#if lastScannedCode}
+        <p class="scan-result">บาร์โค้ดที่อ่านได้: <code>{lastScannedCode}</code></p>
+      {/if}
       <ItemCards {items} onpick={pick} />
       <QueuePanel {status} oncancel={(id) => link?.cancel(id)} onstop={() => link?.stop()} />
     </section>
@@ -140,6 +163,10 @@
       <QueuePanel {status} log oncancel={(id) => link?.cancel(id)} onstop={() => link?.stop()} />
     </aside>
     <section class="items">
+      <button class="scan-test" onclick={() => startScan(true)}>ทดลองสแกนบาร์โค้ด (ไม่สั่งแขนกล)</button>
+      {#if lastScannedCode}
+        <p class="scan-result">บาร์โค้ดที่อ่านได้: <code>{lastScannedCode}</code></p>
+      {/if}
       <form class="search" onsubmit={submitSearch}>
         <input placeholder="ค้นหาแล้วกด Enter เพื่อสั่งหยิบ หรือยิงบาร์โค้ด" bind:value={search} />
         <button type="submit">สั่งหยิบ</button>
@@ -150,7 +177,7 @@
 {/if}
 
 {#if scanning}
-  <BarcodeScanner onscan={(c) => ((scanning = false), byCode(c))} onclose={() => (scanning = false)} />
+  <BarcodeScanner {scanOnly} onscan={onBarcodeScanned} onclose={() => (scanning = false)} />
 {/if}
 
 {#if toast}<div class="toast">{toast}</div>{/if}
@@ -159,7 +186,10 @@
   .mobile { display: flex; flex-direction: column; min-height: 100dvh; }
   .mobile .top { position: sticky; top: 0; z-index: 2; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--bg); }
   .mobile .bottom { display: flex; flex-direction: column; gap: 12px; padding: 0 12px 24px; }
+  .scan-actions { display: grid; gap: 8px; }
   .scan { padding: 16px; font-size: 1.1rem; font-weight: 700; background: var(--accent); color: #111; border: 0; }
+  .scan-result { margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--panel); overflow-wrap: anywhere; }
+  .scan-result code { color: var(--accent); }
   .desktop { display: grid; grid-template-columns: minmax(340px, 420px) 1fr; gap: 20px; padding: 20px; min-height: 100vh; }
   aside { display: flex; flex-direction: column; gap: 12px; }
   header { display: flex; align-items: center; gap: 10px; }
@@ -168,6 +198,7 @@
   .link { font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; background: var(--muted-bg); color: var(--muted); }
   .search { display: flex; gap: 8px; margin-bottom: 14px; }
   .search input { flex: 1; font-size: 1rem; }
+  .scan-test { margin-bottom: 12px; }
   .offline { background: var(--bad); color: #fff; text-align: center; padding: 6px; }
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--panel-hi); color: var(--text); backdrop-filter: blur(6px); border: 1px solid var(--line); padding: 10px 16px; border-radius: 12px; z-index: 20; }
 </style>

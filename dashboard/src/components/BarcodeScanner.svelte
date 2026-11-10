@@ -2,7 +2,7 @@
   // Phone camera barcode scan with the browser's BarcodeDetector (Chrome on Android).
   import { onDestroy, onMount } from 'svelte';
 
-  let { onscan, onclose } = $props();
+  let { onscan, onclose, scanOnly = false } = $props();
   let video;
   let stream;
   let error = $state('');
@@ -45,7 +45,7 @@
     {:else}
       <!-- svelte-ignore a11y_media_has_caption -->
       <video bind:this={video} playsinline muted></video>
-      <p>เล็งกล้องไปที่บาร์โค้ดของชิ้นงาน</p>
+      <p>{scanOnly ? 'โหมดทดลอง: สแกนแล้วจะแสดงบาร์โค้ดเท่านั้น ไม่ส่งคำสั่งไปยังแขนกล' : 'เล็งกล้องไปที่บาร์โค้ดของชิ้นงาน'}</p>
     {/if}
     <button onclick={onclose}>ปิด</button>
   </div>
