@@ -57,3 +57,41 @@ python python/robot_pipeline.py --dry-run --show
 - The included DH/drawing estimates are provisional. The current original Kinematics is a 3-DOF positional approximation, not a validated six-axis model.
 - The DDQN checkpoint was trained against the original state/dynamics assumptions. A changed robot geometry may require evaluation/retraining.
 - A single homography only maps the table plane to XY; it does not measure object height/depth.
+
+# Armbot MQTT Topics
+
+## Pi ส่งออก (publish): หน้าเว็บ subscribe topic เหล่านี้
+
+| Topic | Payload | QoS | Retained | ส่งเมื่อไร | รายละเอียด |
+|---|---|---|---|---|---|
+| `armbot/online` | ข้อความ `"1"` หรือ `"0"` | 1 | ใช่ | `"1"` ตอนต่อ broker ได้, `"0"` ตอนปิดโปรแกรมหรือหลุด (Last Will) | บอกว่า Pi ออนไลน์อยู่ไหม ถ้าเป็น `"0"` หน้าเว็บจะขึ้นแถบสีแดง "เชื่อมต่อหุ่นยนต์ไม่ได้" |
+| `armbot/status` | JSON `{"mode", "state", "jobs":[...], "log":[...]}` | 0 | ใช่ | เช็กทุก 1 วินาที และส่งเฉพาะตอนข้อมูลเปลี่ยน | สถานะแขนกลกับคิวงาน (ดูฟิลด์ในตารางถัดไป) |
+| `armbot/items` | JSON `{"items":[...]}` | 1 | ใช่ | ตอนต่อ broker ได้ และตอนรายการของเปลี่ยน เช่น stock ลดหลังหยิบสำเร็จ | รายการของจาก `calibration/inventory.json` มีฟิลด์ `id`, `name`, `name_th`, `zone`, `stock`, `barcode`, `aliases`, `picks` |
+| `armbot/event` | JSON `{"type":"queued","job":{...},"item":{...}}` หรือ `{"type":"unknown","query":{...}}` | 1 | ไม่ | หลังได้รับ `cmd/queue` ทุกครั้ง | ตอบกลับคำสั่งหยิบ: `queued` แปลว่าเข้าคิวแล้ว, `unknown` แปลว่าหาของไม่เจอ |
+| `armbot/camera` | ภาพ JPEG (binary) ขนาด 320×240 ประมาณ 10 KB | 0 | ไม่ | ทุก 1 วินาที | ภาพจากกล้องบนแขน สำหรับหน้า dashboard บน cloud |
+
+## Pi รับเข้า (subscribe `armbot/cmd/#`): หน้าเว็บหรือเครื่องอื่นส่งมาสั่งงาน
+
+| Topic | Payload ตัวอย่าง | ผลที่เกิดขึ้น |
+|---|---|---|
+| `armbot/cmd/queue` | `{"item_id":"relay","source":"voice"}` | เพิ่มงานหยิบเข้าคิว |
+| | `{"barcode":"ARM-0002","source":"barcode"}` | หาของจากบาร์โค้ด |
+| | `{"text":"เอารีเลย์","source":"mqtt"}` | หาของจากคำใน `aliases` |
+| `armbot/cmd/cancel` | `{"id":3}` | ยกเลิกงานหมายเลข 3 ถ้างานนั้นกำลังหยิบอยู่ แขนจะหยุดแล้วกลับไปท่าพัก |
+| `armbot/cmd/stop` | `{}` | หยุดทันทีและยกเลิกทั้งคิว แขนจะกลับไปท่าพัก (rest pose) |
+
+> ใน `cmd/queue` ใส่แค่อย่างเดียวจาก `item_id`, `barcode` หรือ `text` ส่วน `source` ไม่ใส่ก็ได้ ค่าเริ่มต้นคือ `"mqtt"`
+
+## ฟิลด์ใน `armbot/status`
+
+| ฟิลด์ | ค่าที่เป็นไปได้ | ความหมาย |
+|---|---|---|
+| `mode` | `execute` / `dry-run` | `execute` ขยับแขนจริง, `dry-run` ไม่ส่งสัญญาณไป servo |
+| `state` | `idle` / `picking` / `resting` | ว่างอยู่ / กำลังหยิบ / กำลังกลับท่าพัก |
+| `jobs[].id` | ตัวเลข | หมายเลขงาน ใช้กับ `cmd/cancel` |
+| `jobs[].item_id`, `name`, `name_th` | เช่น `relay`, `รีเลย์โมดูล` | ของที่สั่งหยิบ |
+| `jobs[].source` | `voice` / `barcode` / `click` / `mqtt` | ช่องทางที่สั่งเข้ามา |
+| `jobs[].state` | `queued` → `running` → `done` / `failed` / `cancelled` | สถานะของงานแต่ละงาน |
+| `jobs[].message` | ข้อความ | เหตุผลเมื่องานไม่สำเร็จ หรือรายละเอียดผลงาน |
+| `jobs[].created` | Unix time | เวลาที่สั่งงาน |
+| `log` | รายการข้อความ | log ล่าสุดของโปรแกรมหยิบ |
