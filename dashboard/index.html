@@ -4,26 +4,22 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0f1115" />
-    
-<link rel="icon"
-      type="image/png"
-      sizes="16x16"
-      href="%sveltekit.assets%/favicon-16x16.png">
-
-<link rel="icon"
-      type="image/png"
-      sizes="32x32"
-      href="%sveltekit.assets%/favicon-32x32.png">
-
-<link rel="apple-touch-icon"
-      sizes="180x180"
-      href="%sveltekit.assets%/apple-touch-icon.png">
-
-<link rel="icon"
-      type="image/png"
-      sizes="512x512"
-      href="%sveltekit.assets%/icon-512.png">
-
+    <meta name="description" content="Armbot control dashboard" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <script>
+      try {
+        const theme = localStorage.getItem('armbot-theme');
+        if (theme === 'light' || theme === 'dark') {
+          document.documentElement.dataset.theme = theme;
+          document.querySelector('meta[name="theme-color"]').content = theme === 'dark' ? '#0f1115' : '#f3f5f8';
+        }
+      } catch (error) {
+        console.warn('Could not restore theme preference:', error);
+      }
+    </script>
     <title>Armbot Dashboard</title>
   </head>
   <body>

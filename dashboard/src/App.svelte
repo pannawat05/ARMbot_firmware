@@ -18,9 +18,21 @@
   let toast = $state('');
   let scanning = $state(false);
   let search = $state('');
+  let theme = $state(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
   const media = window.matchMedia('(max-width: 820px)');
   let mobile = $state(media.matches);
   media.addEventListener('change', (e) => (mobile = e.matches));
+
+  function toggleTheme() {
+    theme = theme === 'dark' ? 'light' : 'dark';
+    document.documentElement.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0f1115' : '#f3f5f8');
+    try {
+      localStorage.setItem('armbot-theme', theme);
+    } catch (error) {
+      console.warn('Could not save theme preference:', error);
+    }
+  }
 
   const findItem = (text) => {
     const t = text.toLowerCase();
@@ -74,6 +86,9 @@
   }
 
   onMount(async () => {
+    if ('serviceWorker' in navigator && !import.meta.env.DEV) {
+      navigator.serviceWorker.register('/sw.js').catch((error) => console.warn('Could not register service worker:', error));
+    }
     window.addEventListener('keydown', onKey);
     link = await connect({
       onStatus: (s) => (status = s),
@@ -94,6 +109,13 @@
 {#if mobile}
   <main class="mobile">
     <section class="top">
+      <header>
+        <h1>Armbot</h1>
+        {#if link}<span class="link">{link.mode}</span>{/if}
+        <button class="theme-toggle" onclick={toggleTheme} aria-label={theme === 'dark' ? 'เปลี่ยนเป็นโหมดสว่าง' : 'เปลี่ยนเป็นโหมดมืด'}>
+          {theme === 'dark' ? '☀️ โหมดสว่าง' : '🌙 โหมดมืด'}
+        </button>
+      </header>
       <CameraView {status} snapshot={camera} cloud={link?.cloud} />
       <VoiceBar {voice} compact />
     </section>
@@ -106,7 +128,13 @@
 {:else}
   <main class="desktop">
     <aside>
-      <header><h1>Armbot</h1>{#if link}<span class="link">{link.mode}</span>{/if}</header>
+      <header>
+        <h1>Armbot</h1>
+        {#if link}<span class="link">{link.mode}</span>{/if}
+        <button class="theme-toggle" onclick={toggleTheme} aria-label={theme === 'dark' ? 'เปลี่ยนเป็นโหมดสว่าง' : 'เปลี่ยนเป็นโหมดมืด'}>
+          {theme === 'dark' ? '☀️ โหมดสว่าง' : '🌙 โหมดมืด'}
+        </button>
+      </header>
       <CameraView {status} snapshot={camera} cloud={link?.cloud} />
       <VoiceBar {voice} />
       <QueuePanel {status} log oncancel={(id) => link?.cancel(id)} onstop={() => link?.stop()} />
@@ -136,9 +164,10 @@
   aside { display: flex; flex-direction: column; gap: 12px; }
   header { display: flex; align-items: center; gap: 10px; }
   h1 { margin: 0; font-size: 1.3rem; }
+  .theme-toggle { margin-left: auto; white-space: nowrap; }
   .link { font-size: 0.75rem; padding: 2px 8px; border-radius: 999px; background: var(--muted-bg); color: var(--muted); }
   .search { display: flex; gap: 8px; margin-bottom: 14px; }
   .search input { flex: 1; font-size: 1rem; }
   .offline { background: var(--bad); color: #fff; text-align: center; padding: 6px; }
-  .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: #222a; backdrop-filter: blur(6px); border: 1px solid var(--line); padding: 10px 16px; border-radius: 12px; z-index: 20; }
+  .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--panel-hi); color: var(--text); backdrop-filter: blur(6px); border: 1px solid var(--line); padding: 10px 16px; border-radius: 12px; z-index: 20; }
 </style>

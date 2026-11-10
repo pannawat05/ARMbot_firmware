@@ -12,6 +12,20 @@
   color-scheme: dark;
 }
 
+:root[data-theme='light'] {
+  --bg: #f3f5f8;
+  --panel: #ffffff;
+  --panel-hi: #e9edf3;
+  --line: #d5dce6;
+  --text: #1c2430;
+  --muted: #637083;
+  --muted-bg: #e5e9f0;
+  --accent: #e8a000;
+  --ok: #17854b;
+  --bad: #c7353b;
+  color-scheme: light;
+}
+
 * { box-sizing: border-box; }
 
 html, body {
