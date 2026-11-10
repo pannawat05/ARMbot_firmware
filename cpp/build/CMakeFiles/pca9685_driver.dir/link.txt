@@ -1,0 +1,2 @@
+/usr/bin/ar qc libpca9685_driver.a CMakeFiles/pca9685_driver.dir/servo_controller.cpp.o
+/usr/bin/ranlib libpca9685_driver.a

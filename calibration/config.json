@@ -1,0 +1,41 @@
+{
+  "camera": {
+    "source": "http://CAMERA_IP:81/stream",
+    "width": 640,
+    "height": 480,
+    "weights_path": "models/best.pt",
+    "homography_path": "calibration/H_camera_to_robot.npy",
+    "confidence": 0.35,
+    "pixel_point_mode": "center"
+  },
+  "geometry": {
+    "model": "legacy_training_geometry",
+    "table_z_mm": null,
+    "grasp_z_offsets_mm": {
+      "bananapi": null,
+      "relay_module": null,
+      "ultrasonic_hc-sr04": null
+    },
+    "tray_xyz_mm": null
+  },
+  "ddqn": {
+    "checkpoint": "models/ddqn_6dof_arm_pick_place.zip",
+    "max_steps": 360,
+    "dt": 0.05,
+    "max_velocity_rad_s": 0.65
+  },
+  "hardware": {
+    "i2c_device": "/dev/i2c-1",
+    "pca9685_address": "0x40",
+    "servo_channels": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "motion_enabled": false,
+    "servo_calibration_confirmed": false
+  }
+}

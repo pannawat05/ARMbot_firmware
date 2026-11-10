@@ -1,0 +1,136 @@
+{
+  "_note": "Config for python/visual_pick.py (camera mounted on top of the gripper). Servo channels, types and gripper angles come from pick_place_config.json. Offsets are degrees away from the neutral pose.",
+  "_note_pose": "neutral = the inverted L; offsets and tip height are measured from it. start = where the test begins and ends; keep it equal to the Standby button in servo_control_app.py.",
+  "neutral_servo_deg": {
+    "base": 90,
+    "shoulder": 90,
+    "elbow": 90
+  },
+  "start_servo_deg": {
+    "base": 90,
+    "shoulder": 90,
+    "elbow": 70
+  },
+  "hold_servo_deg": {
+    "wrist_roll": 90,
+    "wrist_pitch": 150
+  },
+  "_note_rest": "rest_servo_deg: servo angles (as in servo_control_app.py) for the raised rest pose used after a run and when the program is stopped.",
+  "rest_servo_deg": {
+    "base": 90,
+    "shoulder": 70,
+    "elbow": 140,
+    "wrist_roll": 90,
+    "wrist_pitch": 110,
+    "gripper": 150
+  },
+  "directions": {
+    "_note": "Filled in by: python visual_pick.py --direction-test. --execute refuses to run until confirmed is true.",
+    "confirmed": true,
+    "base_right_sign": -1,
+    "shoulder_forward_sign": 1,
+    "elbow_down_sign": -1,
+    "image_upright": true
+  },
+  "detection": {
+    "imgsz": 640,
+    "follow_confidence": 0.35,
+    "_note_box": "Without a colour to confirm it, a YOLO box covering more of the frame than this is ignored. A class with a colour takes its position from the colour blob.",
+    "max_box_area_frac": 0.7
+  },
+  "color": {
+    "min_area_frac": 0.05,
+    "classes": {
+      "relay_module": {
+        "hsv_low": [
+          95,
+          110,
+          70
+        ],
+        "hsv_high": [
+          125,
+          255,
+          255
+        ]
+      },
+      "ultrasonic_hc-sr04": {
+        "hsv_low": [
+          95,
+          110,
+          70
+        ],
+        "hsv_high": [
+          125,
+          255,
+          255
+        ],
+        "min_area_frac": 0.02,
+        "circles": 2
+      }
+    },
+    "_note": "--color finds the object by HSV colour instead of YOLO. circles: how many round parts must sit on the blob; this separates the HC-SR04 from the relay, and its position is their midpoint."
+  },
+  "approach": {
+    "_note_search": "Until the object is seen, step down this much per look, pause so the slow camera gets a still frame, and start over from the top at the bottom of the sweep.",
+    "search_elbow_step_deg": 2.0,
+    "search_shoulder_step_deg": 2.0,
+    "search_settle_s": 0.4,
+    "_note_target": "target_u_frac, target_v_frac: the image centre, so an aimed object sits under the lens. The arm then moves out by gripper_offset_mm, the measured lens to gripper centre distance.",
+    "target_u_frac": 0.5,
+    "lost_timeout_s": 6.0,
+    "ramp_deg_per_s": 20.0,
+    "_note_commit": "After commit_detections sightings the arm turns once and goes down blind to align_tip_mm, moves out by gripper_offset_mm (the jaws sit behind the camera), then straight down to grip_tip_mm. base_deg_per_u: base degrees per image width.",
+    "commit_detections": 1,
+    "base_deg_per_u": 40.0,
+    "grip_tip_mm": 38.0,
+    "target_v_frac": 0.5,
+    "aim_deadband": 0.05,
+    "aim_turn_frac": 0.6,
+    "aim_gain_deg": 40.0,
+    "max_aim_steps": 40,
+    "align_tip_mm": 80.0,
+    "gripper_offset_mm": 70.0,
+    "aim_before_pick": true,
+    "_note_aim": "aim_before_pick false: go down at the first detection, using one base turn. true: centre the object in the image first, which lands more accurately. base_deg_per_u 40 comes from a run where 10.8 degrees moved the object 0.28 of the image width."
+  },
+  "limits": {
+    "_note": "Travel from the neutral pose. min_tip_height_mm uses the estimated link lengths and the wrist pitch from hold_servo_deg.",
+    "base_max_deg": 45.0,
+    "shoulder_forward_max_deg": 70.0,
+    "shoulder_back_max_deg": 10.0,
+    "elbow_down_max_deg": 60.0,
+    "elbow_up_max_deg": 60.0,
+    "min_tip_height_mm": 30.0,
+    "search_min_tip_mm": 75.0,
+    "tip_offset_mm": 36.0,
+    "_note_offset": "tip_offset_mm: measured 80 mm at the table when the estimate said 44 mm, so all heights are real table heights from one measured point."
+  },
+  "auto": {
+    "_note": "--auto: after lifting, carry the object to the destination marker (aruco.tray_marker_id). Stops after max_sweeps sweeps with nothing seen.",
+    "max_sweeps": 2
+  },
+  "grip": {
+    "stop_settle_s": 0.5,
+    "lift_mm": 50.0,
+    "carry_deg_per_s": 10.0
+  },
+  "place": {
+    "_note": "With an object held: go to the start pose, turn through scan_base_deg (offsets from the base neutral), then the next row, which lowers shoulder and elbow by that many degrees. Aim as for an object but stay above carry_tip_mm, move out by gripper_offset_mm at drop_tip_mm, then release.",
+    "scan_base_deg": [
+      0,
+      -15,
+      15,
+      -30,
+      30,
+      -45,
+      45
+    ],
+    "scan_rows": [
+      0,
+      8
+    ],
+    "looks_per_stop": 2,
+    "carry_tip_mm": 85.0,
+    "drop_tip_mm": 80.0
+  }
+}

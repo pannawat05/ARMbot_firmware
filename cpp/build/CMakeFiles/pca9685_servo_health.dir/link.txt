@@ -1,0 +1,1 @@
+/usr/bin/c++ -Wl,--dependency-file=CMakeFiles/pca9685_servo_health.dir/link.d CMakeFiles/pca9685_servo_health.dir/servo_health_test.cpp.o -o pca9685_servo_health  libpca9685_driver.a

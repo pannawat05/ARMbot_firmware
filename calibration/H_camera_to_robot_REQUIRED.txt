@@ -1,0 +1,1 @@
+H_camera_to_robot.npy is intentionally absent. Generate from measured camera pixels and robot-base XY coordinates.
