@@ -1,0 +1,4 @@
+node_modules
+dist
+Dockerfile
+build-with-docker.sh

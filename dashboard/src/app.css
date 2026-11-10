@@ -1,0 +1,44 @@
+:root {
+  --bg: #0f1115;
+  --panel: #171a21;
+  --panel-hi: #20242d;
+  --line: #2a2f3a;
+  --text: #eef0f4;
+  --muted: #8b93a3;
+  --muted-bg: #262b35;
+  --accent: #ffb020;
+  --ok: #2fd27a;
+  --bad: #e5484d;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, 'Noto Sans Thai', 'Sarabun', sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button, input, select {
+  font: inherit;
+  color: inherit;
+  border-radius: 10px;
+}
+
+button {
+  cursor: pointer;
+  background: var(--panel-hi);
+  border: 1px solid var(--line);
+  padding: 10px 14px;
+}
+
+button:disabled { cursor: not-allowed; }
+
+input, select {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 10px 12px;
+}
