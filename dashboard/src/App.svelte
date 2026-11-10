@@ -14,6 +14,7 @@
   let status = $state(null);
   let offline = $state(false);
   let link = $state(null); // MQTT or HTTP connection to the robot
+  let camera = $state(null); // cloud mode: latest snapshot from the Pi
   let toast = $state('');
   let scanning = $state(false);
   let search = $state('');
@@ -78,6 +79,7 @@
       onStatus: (s) => (status = s),
       onItems: (list) => (items = list),
       onOnline: (up) => (offline = !up),
+      onCamera: (url) => (camera = url),
     });
   });
   onDestroy(() => {
@@ -92,7 +94,7 @@
 {#if mobile}
   <main class="mobile">
     <section class="top">
-      <CameraView {status} />
+      <CameraView {status} snapshot={camera} cloud={link?.cloud} />
       <VoiceBar {voice} compact />
     </section>
     <section class="bottom">
@@ -105,7 +107,7 @@
   <main class="desktop">
     <aside>
       <header><h1>Armbot</h1>{#if link}<span class="link">{link.mode}</span>{/if}</header>
-      <CameraView {status} />
+      <CameraView {status} snapshot={camera} cloud={link?.cloud} />
       <VoiceBar {voice} />
       <QueuePanel {status} log oncancel={(id) => link?.cancel(id)} onstop={() => link?.stop()} />
     </aside>

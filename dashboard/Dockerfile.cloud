@@ -1,0 +1,17 @@
+# Cloud image: the dashboard as static files in nginx, talking to the Pi only through MQTT.
+# Runs on Oracle Cloud Ampere (arm64) or x86. The broker settings come from environment
+# variables at start, so no password is baked into the image:
+#   docker compose -f docker-compose.cloud.yml up -d --build
+FROM node:20-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm install --no-audit --no-fund
+COPY . .
+RUN npm run build
+
+FROM nginx:1.27-alpine
+COPY cloud/nginx.conf /etc/nginx/conf.d/default.conf
+COPY cloud/write-config.sh /docker-entrypoint.d/40-armbot-config.sh
+RUN chmod +x /docker-entrypoint.d/40-armbot-config.sh
+COPY --from=build /app/dist /usr/share/nginx/html
+EXPOSE 80

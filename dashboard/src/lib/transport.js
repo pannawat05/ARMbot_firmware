@@ -4,11 +4,22 @@
 // its WebSocket port. Over https:// browsers block a plain ws:// broker, so the page uses
 // the Pi's own HTTP API instead (HTTPS is needed for the phone's mic and camera).
 // If the broker cannot be reached within 5 s the page falls back to the HTTP API.
+//
+// Cloud mode: when the page is served from somewhere other than the Pi (the nginx image in
+// Dockerfile.cloud), /config.json carries the broker settings. The page then uses MQTT only,
+// keeps retrying, and shows the camera from the Pi's <prefix>/camera snapshots.
 // Both give the same interface: status and item updates, plus queue / cancel / stop.
 
 import * as api from './api.js';
 
-export async function connect({ onStatus, onItems, onOnline }) {
+const getJson = (url) => fetch(url).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+
+export async function connect({ onStatus, onItems, onOnline, onCamera }) {
+  const cloud = await getJson('/config.json');
+  if (cloud?.mqtt) {
+    const link = await connectMqtt(cloud.mqtt, { onStatus, onItems, onOnline, onCamera }, false);
+    return { ...link, mode: 'MQTT cloud', cloud: true };
+  }
   const cfg = location.protocol === 'http:' ? await fetch('/mqtt.json').then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
   if (cfg) {
     try {
@@ -22,7 +33,7 @@ export async function connect({ onStatus, onItems, onOnline }) {
 
 const MQTT_CONNECT_MS = 5000;
 
-async function connectMqtt(cfg, { onStatus, onItems, onOnline }) {
+async function connectMqtt(cfg, { onStatus, onItems, onOnline, onCamera }, mustConnect = true) {
   const mod = await import('mqtt');
   const connect = mod.connect ?? mod.default.connect;
   const p = cfg.prefix;
@@ -33,15 +44,24 @@ async function connectMqtt(cfg, { onStatus, onItems, onOnline }) {
     reconnectPeriod: 2000,
     connectTimeout: MQTT_CONNECT_MS,
   });
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => (client.end(true), reject(new Error('timeout'))), MQTT_CONNECT_MS);
-    client.once('connect', () => (clearTimeout(timer), resolve()));
-  });
-  const subscribe = () => client.subscribe([`${p}/status`, `${p}/items`, `${p}/online`]);
-  subscribe(); // the first connect already happened above
+  const topics = [`${p}/status`, `${p}/items`, `${p}/online`, ...(onCamera ? [`${p}/camera`] : [])];
+  const subscribe = () => client.subscribe(topics);
+  if (mustConnect) {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => (client.end(true), reject(new Error('timeout'))), MQTT_CONNECT_MS);
+      client.once('connect', () => (clearTimeout(timer), resolve()));
+    });
+    subscribe(); // the first connect already happened above
+  }
   client.on('connect', subscribe); // and again after every reconnect
+  let picture;
   client.on('close', () => onOnline(false));
   client.on('message', (topic, payload) => {
+    if (topic === `${p}/camera`) {
+      if (picture) URL.revokeObjectURL(picture);
+      picture = URL.createObjectURL(new Blob([payload], { type: 'image/jpeg' }));
+      return onCamera(picture);
+    }
     const text = payload.toString();
     if (topic === `${p}/online`) return onOnline(text === '1');
     if (!text) return;

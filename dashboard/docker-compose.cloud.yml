@@ -1,0 +1,14 @@
+# Dashboard for a cloud VM (e.g. Oracle Cloud Ampere). The Pi keeps running
+# python/armbot_server.py, connected to the same broker.
+#   cp cloud.env.example cloud.env   # then fill in the broker settings
+#   docker compose -f docker-compose.cloud.yml up -d --build
+services:
+  armbot-dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.cloud
+    image: armbot-dashboard:cloud
+    env_file: cloud.env
+    ports:
+      - "8080:80"
+    restart: unless-stopped

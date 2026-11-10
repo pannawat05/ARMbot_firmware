@@ -2,3 +2,7 @@ node_modules
 dist
 Dockerfile
 build-with-docker.sh
+Dockerfile.cloud
+docker-compose.cloud.yml
+cloud.env
+cloud.env.example

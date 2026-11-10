@@ -19,7 +19,8 @@ DELETE /api/queue/<id>, POST /api/stop, GET /stream.mjpg, GET /mqtt.json.
 
 MQTT (calibration/mqtt.json, skipped with --no-mqtt), with <p> the prefix ("armbot"):
   published, retained:  <p>/online "1"/"0", <p>/items, <p>/status (same JSON as the API)
-  published:            <p>/event {"type": "queued"|"unknown", ...} after each queue command
+  published:            <p>/event {"type": "queued"|"unknown", ...} after each queue command,
+                        <p>/camera JPEG 320x240 every camera_every_s (default 1 s; 0 = off)
   subscribed:           <p>/cmd/queue {"item_id"|"barcode"|"text", "source"},
                         <p>/cmd/cancel {"id"}, <p>/cmd/stop {}
 
@@ -121,7 +122,7 @@ class CameraHub:
     def stop_requested(self):
         return self.stop_event.is_set()
 
-    def jpeg(self):
+    def jpeg(self, size=None, quality=75):
         import cv2
 
         with self.cond:
@@ -131,7 +132,9 @@ class CameraHub:
             return None
         if self.rotate and not fresh:
             frame = cv2.rotate(frame, cv2.ROTATE_180)
-        return cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes()
+        if size:
+            frame = cv2.resize(frame, size)
+        return cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])[1].tobytes()
 
     def close(self):
         """Detectors call this when a pick ends; the shared camera stays open."""
@@ -292,10 +295,11 @@ class Robot:
 class MqttBridge:
     """Mirrors the queue and status on an MQTT broker and takes commands from it."""
 
-    def __init__(self, cfg, robot, inventory, log):
+    def __init__(self, cfg, robot, inventory, log, hub=None):
         import paho.mqtt.client as mqtt
 
-        self.robot, self.inventory, self.log = robot, inventory, log
+        self.robot, self.inventory, self.log, self.hub = robot, inventory, log, hub
+        self.camera_every_s = cfg.get("camera_every_s", 1.0)  # 0 = do not send snapshots
         self.p = cfg["prefix"]
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"armbot-{os.uname().nodename}")
         self.client.username_pw_set(cfg["username"], cfg["password"])
@@ -341,7 +345,14 @@ class MqttBridge:
 
     def _publisher(self):
         last_status = last_items = None
+        last_camera = 0.0
         while True:
+            if self.hub and self.camera_every_s and self.client.is_connected() \
+                    and time.monotonic() - last_camera >= self.camera_every_s:
+                jpg = self.hub.jpeg(size=(320, 240), quality=60)  # about 10 KB, for the cloud dashboard
+                if jpg:
+                    self.client.publish(f"{self.p}/camera", jpg, qos=0)
+                last_camera = time.monotonic()
             status = json.dumps({**self.robot.status(), "log": self.log.tail()}, ensure_ascii=False)
             items = json.dumps({"items": self.inventory.items()}, ensure_ascii=False)
             if self.client.is_connected():
@@ -493,7 +504,7 @@ def main():
     hub = CameraHub(camera_cfg, rotate=not vp.load_config(vp.VISUAL_CONFIG)["directions"]["image_upright"])
     robot = Robot(args.execute, inventory, hub)
     mqtt_cfg = None if args.no_mqtt or not MQTT_CONFIG.exists() else json.loads(MQTT_CONFIG.read_text("utf-8"))
-    bridge = MqttBridge(mqtt_cfg, robot, inventory, log) if mqtt_cfg else None
+    bridge = MqttBridge(mqtt_cfg, robot, inventory, log, hub) if mqtt_cfg else None
     server = QuietServer(("0.0.0.0", args.port), make_handler(robot, inventory, hub, log, mqtt_cfg))
     scheme = "http"
     if not args.http:
