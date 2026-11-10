@@ -1,8 +1,9 @@
 // How the dashboard talks to the robot.
 //
-// Over http:// the page uses the MQTT broker (settings from the Pi's /mqtt.json) through
-// its WebSocket port. Over https:// browsers block a plain ws:// broker, so the page uses
-// the Pi's own HTTP API instead (HTTPS is needed for the phone's mic and camera).
+// The page uses the MQTT broker (settings from the Pi's /mqtt.json) through its WebSocket
+// port. Over https:// browsers block a plain ws:// broker, so with a ws:// broker the page
+// uses the Pi's own HTTP API instead (HTTPS is needed for the phone's mic and camera);
+// a wss:// broker works from both.
 // If the broker cannot be reached within 5 s the page falls back to the HTTP API.
 //
 // Cloud mode: when the page is served from somewhere other than the Pi (the nginx image in
@@ -20,8 +21,8 @@ export async function connect({ onStatus, onItems, onOnline, onCamera }) {
     const link = await connectMqtt(cloud.mqtt, { onStatus, onItems, onOnline, onCamera }, false);
     return { ...link, mode: 'MQTT cloud', cloud: true };
   }
-  const cfg = location.protocol === 'http:' ? await fetch('/mqtt.json').then((r) => (r.ok ? r.json() : null)).catch(() => null) : null;
-  if (cfg) {
+  const cfg = await getJson('/mqtt.json');
+  if (cfg?.ws_url && (location.protocol === 'http:' || !cfg.ws_url.startsWith('ws:'))) {
     try {
       return await connectMqtt(cfg, { onStatus, onItems, onOnline });
     } catch (e) {
@@ -42,8 +43,8 @@ async function connectMqtt(cfg, { onStatus, onItems, onOnline, onCamera }, mustC
     ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${cfg.ws_url}`
     : cfg.ws_url;
   const client = connect(url, {
-    username: cfg.username,
-    password: cfg.password,
+    username: cfg.username || undefined, // public brokers take no login
+    password: cfg.password || undefined,
     clientId: `armbot-web-${Math.random().toString(16).slice(2, 10)}`,
     reconnectPeriod: 2000,
     connectTimeout: MQTT_CONNECT_MS,

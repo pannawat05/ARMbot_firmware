@@ -302,7 +302,8 @@ class MqttBridge:
         self.camera_every_s = cfg.get("camera_every_s", 1.0)  # 0 = do not send snapshots
         self.p = cfg["prefix"]
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=f"armbot-{os.uname().nodename}")
-        self.client.username_pw_set(cfg["username"], cfg["password"])
+        if cfg.get("username"):  # public brokers such as broker.hivemq.com take no login
+            self.client.username_pw_set(cfg["username"], cfg.get("password"))
         self.client.will_set(f"{self.p}/online", "0", qos=1, retain=True)
         self.client.on_connect = self._connected
         self.closing = False

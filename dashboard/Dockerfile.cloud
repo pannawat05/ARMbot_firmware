@@ -10,8 +10,6 @@ COPY . .
 RUN npm run build
 
 FROM nginx:1.27-alpine
-# Where nginx forwards /mqtt: the broker's WebSocket listener, seen from the container.
-ENV MQTT_WS_UPSTREAM=host.docker.internal:9001
 COPY cloud/default.conf.template /etc/nginx/templates/default.conf.template
 COPY cloud/write-config.sh /docker-entrypoint.d/40-armbot-config.sh
 RUN chmod +x /docker-entrypoint.d/40-armbot-config.sh
