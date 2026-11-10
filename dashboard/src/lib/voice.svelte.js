@@ -15,6 +15,16 @@ const COMMAND_MS = 8000;
 
 const Recognition = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition);
 
+// Why recognition stopped, in words the user can act on.
+const ERRORS = {
+  'not-allowed': 'ไม่ได้รับอนุญาตให้ใช้ไมค์: กดรูปกุญแจข้างช่อง URL แล้วอนุญาตไมโครโฟน',
+  'service-not-allowed': 'เบราว์เซอร์นี้ไม่มีบริการรู้จำเสียง (เช่น Chromium บน Raspberry Pi): ใช้ Google Chrome บนมือถือหรือคอม',
+  'audio-capture': 'ไม่พบไมโครโฟน: เสียบไมค์หรือเช็กว่าแอปอื่นไม่ได้ใช้อยู่',
+  'network': 'ส่งเสียงไปรู้จำไม่ได้: ต้องต่ออินเทอร์เน็ต และใช้ Google Chrome (Chromium บน Pi ใช้ไม่ได้)',
+  'language-not-supported': 'เบราว์เซอร์นี้ไม่รองรับภาษาไทย: ใช้ Google Chrome',
+};
+const FATAL = new Set(Object.keys(ERRORS));
+
 function afterWake(text) {
   const lower = text.toLowerCase();
   for (const w of WAKE_WORDS) {
@@ -27,6 +37,8 @@ function afterWake(text) {
 export function createVoice({ findItem, order }) {
   const v = $state({
     supported: !!Recognition,
+    // Browsers give the microphone only to https:// pages (and localhost).
+    secure: typeof window === 'undefined' || window.isSecureContext,
     enabled: false,
     mode: 'off', // off | standby | active | confirm
     heard: '', // live transcript
@@ -98,11 +110,10 @@ export function createVoice({ findItem, order }) {
       onText(r[0].transcript, r.isFinal);
     };
     rec.onerror = (e) => {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        v.error = 'ไม่ได้รับอนุญาตให้ใช้ไมค์ (ต้องเปิดผ่าน HTTPS)';
-        stop();
-      } else if (e.error === 'network') {
-        v.error = 'ระบบรู้จำเสียงต้องใช้อินเทอร์เน็ต';
+      console.warn('speech recognition:', e.error, e.message);
+      if (FATAL.has(e.error)) {
+        stop(); // retrying would only repeat the same error
+        v.error = ERRORS[e.error];
       }
     };
     // Chrome ends recognition after a pause; keep listening while enabled.
@@ -116,6 +127,10 @@ export function createVoice({ findItem, order }) {
 
   function enable() {
     if (!Recognition) return;
+    if (!v.secure) {
+      v.error = `ไมค์ใช้ได้เฉพาะหน้าเว็บ https:// (หน้านี้คือ ${location.origin})`;
+      return;
+    }
     v.enabled = true;
     v.error = '';
     setMode('standby', 'พูด "Hey Armbot" เพื่อสั่งงาน');

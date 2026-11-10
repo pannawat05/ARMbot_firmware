@@ -13,7 +13,10 @@
   <div class="text">
     {#if !s.supported}
       <strong>เบราว์เซอร์นี้ไม่รองรับการสั่งด้วยเสียง</strong>
-      <span>ใช้ Chrome บน Android หรือ Chrome บนคอม</span>
+      <span>ใช้ Google Chrome บน Android หรือบนคอม</span>
+    {:else if !s.secure}
+      <strong>สั่งด้วยเสียงต้องเปิดหน้านี้ผ่าน https://</strong>
+      <span class="error">หน้านี้เป็น http:// เบราว์เซอร์จึงไม่ให้ใช้ไมค์</span>
     {:else}
       <strong>{s.message}</strong>
       {#if s.mode === 'active'}

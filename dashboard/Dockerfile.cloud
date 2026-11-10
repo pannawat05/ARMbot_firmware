@@ -10,8 +10,10 @@ COPY . .
 RUN npm run build
 
 FROM nginx:1.27-alpine
+RUN apk add --no-cache openssl
+COPY cloud/make-cert.sh /docker-entrypoint.d/30-armbot-cert.sh
 COPY cloud/default.conf.template /etc/nginx/templates/default.conf.template
 COPY cloud/write-config.sh /docker-entrypoint.d/40-armbot-config.sh
-RUN chmod +x /docker-entrypoint.d/40-armbot-config.sh
+RUN chmod +x /docker-entrypoint.d/30-armbot-cert.sh /docker-entrypoint.d/40-armbot-config.sh
 COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80
+EXPOSE 80 443

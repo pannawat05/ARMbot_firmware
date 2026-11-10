@@ -1,6 +1,18 @@
-# nginx inside the cloud image (a template, so environment variables can be added later).
+# nginx inside the cloud image: HTTPS on 443 (the microphone for voice commands and the
+# camera for barcode scanning only work on https:// pages); plain HTTP on 80 redirects there.
+# Certificate: certs/fullchain.pem + certs/privkey.pem (mounted from the host). When they are
+# missing, 30-armbot-cert.sh makes a self-signed pair on start.
 server {
     listen 80;
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    ssl_certificate     /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
     root /usr/share/nginx/html;
 
     # config.json holds the broker settings for this page; never cache it.

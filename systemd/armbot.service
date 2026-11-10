@@ -1,0 +1,29 @@
+# Starts the Armbot dashboard server (python/armbot_server.py) when the Pi boots.
+# Install with systemd/install-service.sh. Then:
+#   sudo systemctl start|stop|restart armbot     stop sends the arm to the rest pose first
+#   journalctl -u armbot -f                      live log
+#   sudo systemctl disable armbot                no longer start at boot
+#
+# --execute moves the real arm whenever a pick is queued, from the dashboard or from anyone
+# who can publish to the MQTT broker. For a dry run, remove --execute --yes below, then
+#   sudo systemctl daemon-reload && sudo systemctl restart armbot
+[Unit]
+Description=Armbot dashboard server (pick-and-place arm)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+SupplementaryGroups=i2c video dialout gpio
+WorkingDirectory=/home/pi/Documents/yolo_xyz_ddqn_pca9685_project/python
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/pi/Documents/yolo_xyz_ddqn_pca9685_project/.venv-cpu/bin/python armbot_server.py --execute --yes
+Restart=on-failure
+RestartSec=5
+# The server finishes the current move and goes to the rest pose (up to 30 s) on stop.
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

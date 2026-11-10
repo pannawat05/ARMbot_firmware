@@ -2,6 +2,7 @@
 # python/armbot_server.py, connected to the same broker.
 #   cp cloud.env.example cloud.env   # then fill in the broker settings
 #   docker compose -f docker-compose.cloud.yml up -d --build
+# Open ports 80 and 443 on the VM. The page is https://<domain or IP>/; port 80 redirects there.
 services:
   armbot-dashboard:
     build:
@@ -10,5 +11,8 @@ services:
     image: armbot-dashboard:cloud
     env_file: cloud.env
     ports:
-      - "8080:80"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./certs:/etc/nginx/certs   # fullchain.pem + privkey.pem; self-signed ones are made if empty
     restart: unless-stopped

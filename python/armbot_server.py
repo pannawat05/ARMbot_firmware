@@ -492,9 +492,10 @@ def main():
     ap.add_argument("--http", action="store_true", help="plain HTTP instead of HTTPS")
     ap.add_argument("--camera", choices=("serial", "usb"), help="override camera.source in the config")
     ap.add_argument("--no-mqtt", action="store_true", help="do not connect to the MQTT broker")
+    ap.add_argument("--yes", action="store_true", help="skip the --execute safety question (systemd service)")
     args = ap.parse_args()
 
-    if args.execute and not vp.ask("Servo power on, area clear, hand on the arm? The dashboard will move it"):
+    if args.execute and not args.yes and not vp.ask("Servo power on, area clear, hand on the arm? The dashboard will move it"):
         print("Cancelled.")
         return
     log = LogTee(sys.stdout)
