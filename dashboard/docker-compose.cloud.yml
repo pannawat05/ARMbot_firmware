@@ -11,4 +11,6 @@ services:
     env_file: cloud.env
     ports:
       - "8080:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets nginx reach a broker running on this VM
     restart: unless-stopped

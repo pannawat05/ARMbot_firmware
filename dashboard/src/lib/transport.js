@@ -37,7 +37,11 @@ async function connectMqtt(cfg, { onStatus, onItems, onOnline, onCamera }, mustC
   const mod = await import('mqtt');
   const connect = mod.connect ?? mod.default.connect;
   const p = cfg.prefix;
-  const client = connect(cfg.ws_url, {
+  // "/mqtt" means this page's own server, which forwards to the broker (cloud image).
+  const url = cfg.ws_url.startsWith('/')
+    ? `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${cfg.ws_url}`
+    : cfg.ws_url;
+  const client = connect(url, {
     username: cfg.username,
     password: cfg.password,
     clientId: `armbot-web-${Math.random().toString(16).slice(2, 10)}`,
