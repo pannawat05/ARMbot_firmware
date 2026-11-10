@@ -9,7 +9,7 @@
   "start_servo_deg": {
     "base": 90,
     "shoulder": 90,
-    "elbow": 70
+    "elbow": 86
   },
   "hold_servo_deg": {
     "wrist_roll": 90,
@@ -30,13 +30,16 @@
     "base_right_sign": -1,
     "shoulder_forward_sign": 1,
     "elbow_down_sign": -1,
-    "image_upright": true
+    "image_upright": false,
+    "_note_image": "image_upright false rotates every camera frame 180 degrees. Set false on 2026-11-10: with the USB camera both image axes moved the wrong way while aiming."
   },
   "detection": {
     "imgsz": 640,
-    "follow_confidence": 0.35,
+    "follow_confidence": 0.1,
     "_note_box": "Without a colour to confirm it, a YOLO box covering more of the frame than this is ignored. A class with a colour takes its position from the colour blob.",
-    "max_box_area_frac": 0.7
+    "max_box_area_frac": 0.7,
+    "position_source": "yolo",
+    "_note_position": "position_source yolo: the object position is the centre of the YOLO box, ((x1+x2)/2, (y1+y2)/2), and YOLO runs on every look while aiming (about 0.7 s each). The colour must still agree under that centre. Boxes larger than max_box_area_frac fall back to the colour blob centre. color: the colour blob gives the position and YOLO only confirms once. --color objects (HC-SR04 in the dashboard) never use YOLO."
   },
   "color": {
     "min_area_frac": 0.05,
@@ -64,11 +67,33 @@
           255,
           255
         ],
-        "min_area_frac": 0.02,
-        "circles": 2
+        "circles": 2,
+        "board_hsv_low": [
+          80,
+          20,
+          100
+        ],
+        "board_hsv_high": [
+          125,
+          255,
+          255
+        ],
+        "board_min_cover": 0.15
+      },
+      "bananapi": {
+        "hsv_low": [
+          3,
+          43,
+          78
+        ],
+        "hsv_high": [
+          22,
+          157,
+          205
+        ]
       }
     },
-    "_note": "--color finds the object by HSV colour instead of YOLO. circles: how many round parts must sit on the blob; this separates the HC-SR04 from the relay, and its position is their midpoint."
+    "_note": "--color finds the object by HSV colour instead of YOLO. circles: the class is found as two same-size circles side by side on a board whose colour (board_hsv_low/high) covers at least board_min_cover of the box around them; the position is their midpoint. Measured on the USB camera, where the HC-SR04 board looks pale blue (S down to about 20)."
   },
   "approach": {
     "_note_search": "Until the object is seen, step down this much per look, pause so the slow camera gets a still frame, and start over from the top at the bottom of the sweep.",
@@ -78,24 +103,32 @@
     "_note_target": "target_u_frac, target_v_frac: the image centre, so an aimed object sits under the lens. The arm then moves out by gripper_offset_mm, the measured lens to gripper centre distance.",
     "target_u_frac": 0.5,
     "lost_timeout_s": 6.0,
-    "ramp_deg_per_s": 20.0,
+    "ramp_deg_per_s": 30.0,
     "_note_commit": "After commit_detections sightings the arm turns once and goes down blind to align_tip_mm, moves out by gripper_offset_mm (the jaws sit behind the camera), then straight down to grip_tip_mm. base_deg_per_u: base degrees per image width.",
-    "commit_detections": 1,
+    "commit_detections": 3,
     "base_deg_per_u": 40.0,
     "grip_tip_mm": 38.0,
     "target_v_frac": 0.5,
-    "aim_deadband": 0.05,
-    "aim_turn_frac": 0.6,
-    "aim_gain_deg": 40.0,
+    "aim_deadband": 0.06,
+    "aim_turn_frac": 0.85,
+    "aim_gain_deg": 50.0,
     "max_aim_steps": 40,
     "align_tip_mm": 80.0,
-    "gripper_offset_mm": 70.0,
+    "gripper_offset_mm": 60.0,
     "aim_before_pick": true,
-    "_note_aim": "aim_before_pick false: go down at the first detection, using one base turn. true: centre the object in the image first, which lands more accurately. base_deg_per_u 40 comes from a run where 10.8 degrees moved the object 0.28 of the image width."
+    "_note_aim": "Aiming (aim_before_pick true): each look turns the base and slides the camera together, aim_turn_frac of the base error and aim_gain_deg per image height, then waits aim_settle_s. base_deg_per_u 40 comes from a run where 10.8 degrees moved the object 0.28 of the image width.",
+    "base_offset_deg": 0.1,
+    "_note_base_offset": "base_offset_deg: added to the single base turn before going down (positive turns right, about 3 degrees per cm at the grip reach of about 187 mm). 2026-11-10: -6.1 after a 2 cm right miss; with YOLO box centres the jaws landed 1 cm left (-> -3.0), then 1 cm left again (-> 0.1).",
+    "aim_settle_s": 0.3,
+    "aim_both_axes": true,
+    "_note_precision": "Accuracy (2026-11-10): aim roughly (aim_deadband 6%), then take commit_detections looks without moving and go down on their average, which smooths YOLO's box jitter. The leftover error is corrected while going down: across with base_deg_per_u, and out/back with mm_per_image_height (an estimate: 140 mm of table per image height at the aiming height; if the jaws land consistently short or long, tune gripper_offset_mm first).",
+    "mm_per_image_height": 140.0,
+    "final_descent_deg_per_s": 8.0,
+    "_note_teach": "target_u_frac / target_v_frac per object come from --teach: the image position of the object when it is centred between the jaws, seen from the aiming pose. final_descent_deg_per_s: speed of the last move down onto the object."
   },
   "limits": {
     "_note": "Travel from the neutral pose. min_tip_height_mm uses the estimated link lengths and the wrist pitch from hold_servo_deg.",
-    "base_max_deg": 45.0,
+    "base_max_deg": 60.0,
     "shoulder_forward_max_deg": 70.0,
     "shoulder_back_max_deg": 10.0,
     "elbow_down_max_deg": 60.0,
@@ -123,7 +156,9 @@
       -30,
       30,
       -45,
-      45
+      45,
+      -60,
+      60
     ],
     "scan_rows": [
       0,
@@ -132,5 +167,42 @@
     "looks_per_stop": 2,
     "carry_tip_mm": 85.0,
     "drop_tip_mm": 80.0
+  },
+  "_note_objects": "objects: per-class values laid over approach / limits / place, for objects that are not relay-sized. Heights are real table heights of the gripper tip. bananapi is a 95 mm tall box: search and aim stay above it, the jaws move out over it at align_tip_mm, then grip 25 mm below its top.",
+  "objects": {
+    "bananapi": {
+      "_note": "Box 95 mm tall. Gripper opening must fit across the box.",
+      "approach": {
+        "aim_min_tip_mm": 115.0,
+        "align_tip_mm": 125.0,
+        "grip_tip_mm": 70.0
+      },
+      "limits": {
+        "search_min_tip_mm": 115.0
+      },
+      "place": {
+        "carry_tip_mm": 140.0,
+        "drop_tip_mm": 115.0
+      },
+      "detection": {
+        "_note": "Any YOLO bananapi box (the model reports from 0.1) counts once the colour blob under it agrees.",
+        "follow_confidence": 0.1
+      },
+      "grip": {
+        "lift_mm": 80.0
+      }
+    },
+    "ultrasonic_hc-sr04": {
+      "_note": "HC-SR04: found by its two circles (colour only), not by YOLO.",
+      "approach": {
+        "base_offset_deg": 7.2
+      },
+      "_note_offset": "base_offset_deg: jaws landed about 13 mm left (on the left transducer instead of between the two) on 2026-11-10, so 0.1 + 4.0 deg (13 mm at the 187 mm grip reach)."
+    },
+    "relay_module": {
+      "approach": {
+        "base_offset_deg": 4.7
+      }
+    }
   }
 }

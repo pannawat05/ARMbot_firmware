@@ -59,7 +59,7 @@ All channel numbers are PCA9685 channels as wired (assumed from the user's list,
   - shoulder: servo angle up = upper arm leans forward (`shoulder_forward_sign: 1`)
   - elbow: servo angle **down** = forearm down (`elbow_down_sign: -1`)
   - base: servo angle up = arm turns left seen from behind (`base_right_sign: -1`)
-- Start / standby pose: base 90, shoulder 90, elbow 70, wrist roll 90, wrist pitch 150.
+- Start / standby pose: base 90, shoulder 90, elbow 86 (was 70; raised about 3 cm on 2026-11-10), wrist roll 90, wrist pitch 150.
   This is `STANDBY_DEG` in `servo_control_app.py` and `start_servo_deg` + `hold_servo_deg` in the config.
 - Link lengths in `calibration/pick_place_config.json` (`arm` section) are **estimates from a drawing**,
   never measured: shoulder height 50.87, upper arm 113.12, forearm 97.05, tool 46.0 mm.
@@ -147,6 +147,7 @@ Python environment: always run with `.venv-cpu/bin/python` from `python/`
 | `--grip-test` | Gripper holds a hand-placed object through still / base turn / reach-out moves. No camera. |
 | `--direction-test` | Nudges each joint 8 degrees and asks which way it went; writes the signs. |
 | `--max-picks N` | With `--auto`, stop after N picks. |
+| `CLASS --learn-color` | Samples the colour in the middle of the camera view and saves it as `color.classes.CLASS` after a y/n. Added for `bananapi`; once saved, YOLO picks of that class are colour-confirmed and `--execute` is allowed. Not yet run on the real board (camera was unplugged). |
 | without `--execute` | Dry run: real camera, no servo output (`DryRunQuiet`). Poses are simulated, so the base often runs to its limit; that is expected. |
 
 ### Commands the user runs
@@ -267,3 +268,22 @@ Always check with `--detect` first.
 3. Verify the drop over the marker and measure the placing error.
 4. Retrain YOLO on images from the gripper camera; then consider NCNN export for speed.
 5. Measure the arm link lengths and update `pick_place_config.json` `arm` to replace the estimates.
+
+## Web dashboard (added 2026-11-10)
+- `python/armbot_server.py`: stdlib HTTP(S) server on port 8443. One shared camera (`CameraHub`), one worker
+  thread running queued picks with `visual_pick.auto_run(max_picks=1)`, rest pose when the queue empties,
+  Stop button/`POST /api/stop`, Ctrl+C/SIGTERM rest. Dry run unless `--execute`. Self-signed cert in
+  `python/.armbot_certs/` (phones need HTTPS for mic and camera). `--http`, `--port`, `--camera serial|usb`.
+- `calibration/inventory.json`: items (id, names, yolo_class, color_only, zone, stock, barcode, voice aliases,
+  picks). Zones, stock and barcodes are examples. Stock/picks update after successful picks.
+- `dashboard/`: Svelte 5 + Vite. Mobile: camera + voice on top, scan button + item cards below. Desktop: camera,
+  voice, queue and log on the left; filterable table and search/USB-scanner input on the right. Voice uses the
+  browser Web Speech API (th-TH, needs internet; "Hey Armbot" wake phrase, reply via speechSynthesis).
+  Barcode by phone uses BarcodeDetector (Chrome Android). Build: `dashboard/build-with-docker.sh` (Docker is
+  used only to build; the server runs on the Pi). Not tested yet with a real camera, phone or the arm.
+- MQTT (2026-11-10): `calibration/mqtt.json` (git-ignored; holds the broker password) points to
+  `mqtt.panplay-itgoeasy.xyz`, TCP 1883 for the Pi, `ws://...:9001` for the browser, prefix `armbot`.
+  The server publishes retained `armbot/online|items|status`, `armbot/event`, and takes `armbot/cmd/queue|cancel|stop`
+  (tested against the broker under a test prefix). The page uses MQTT only over http:// and falls back to the
+  Pi's HTTP API after 5 s; over https:// it always uses HTTP (ws:// is blocked from https). On 2026-11-10 port 9001
+  was not reachable from the Pi (TCP refused/filtered), so browsers fall back to HTTP until the broker exposes it.

@@ -62,7 +62,7 @@
     "wrist_mode": "fixed",
     "wrist_fixed_deg": -90.0,
     "_note_home": "Home/standby pose as servo angles shown in servo_control_app.py (base, shoulder, elbow, wrist roll, wrist pitch); same as its Standby button. Disabled joints are not driven.",
-    "home_servo_deg": [90, 90, 70, 90, 90]
+    "home_servo_deg": [90, 90, 86, 90, 150]
   },
 
   "joints": {
@@ -84,7 +84,9 @@
     "open_deg": 150,
     "_note_grip": "visual_pick.py closes to grip_deg and keeps PWM on until release. 50 matches the Grip button in servo_control_app.py.",
     "grip_deg": 50,
-    "settle_s": 0.8
+    "settle_s": 0.8,
+    "_note_close": "close_s: seconds to close the jaws gradually, so the first jaw to touch does not flick the object away.",
+    "close_s": 0.6
   },
 
   "ddqn": {

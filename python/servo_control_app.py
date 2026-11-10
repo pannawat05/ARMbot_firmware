@@ -31,7 +31,7 @@ MAX_DEG = 150
 HOME_DEG = 90
 GRIP_DEG = 50
 # Standby pose for slots 1-5 (base, shoulder, elbow, wrist roll, wrist pitch), shown angles in degrees.
-STANDBY_DEG = [90, 90, 70, 90, 150]
+STANDBY_DEG = [90, 90, 86, 90, 150]
 UNGRIP_DEG = 150
 # "Close & hold" keeps PWM on slots 1-5, the arm and wrist; the gripper relaxes as usual.
 HOLD_SLOTS = 5

@@ -1,0 +1,58 @@
+{
+  "_note": "Items the dashboard can order. yolo_class must match visual_pick.py; color_only uses colour detection instead of YOLO (as --color). aliases are matched inside spoken text (lower case). zone, stock and barcode are examples: edit them to the real shelf, count and printed barcode. stock and picks are updated by armbot_server.py after each successful pick.",
+  "items": [
+    {
+      "id": "relay",
+      "name": "Relay module 4 ch",
+      "name_th": "รีเลย์โมดูล",
+      "yolo_class": "relay_module",
+      "color_only": false,
+      "zone": "A1",
+      "stock": 4,
+      "barcode": "ARM-0001",
+      "aliases": [
+        "รีเลย์",
+        "รีเลย",
+        "relay"
+      ],
+      "picks": 1
+    },
+    {
+      "id": "ultrasonic",
+      "name": "HC-SR04 ultrasonic sensor",
+      "name_th": "เซนเซอร์อัลตราโซนิก",
+      "yolo_class": "ultrasonic_hc-sr04",
+      "color_only": true,
+      "zone": "A2",
+      "stock": 0,
+      "barcode": "ARM-0002",
+      "aliases": [
+        "อัลตราโซนิก",
+        "อัลตร้าโซนิค",
+        "อัลตราโซนิค",
+        "ultrasonic",
+        "hc-sr04",
+        "hc sr04"
+      ],
+      "picks": 3
+    },
+    {
+      "id": "bananapi",
+      "name": "Banana Pi (boxed)",
+      "name_th": "บานาน่าพาย",
+      "yolo_class": "bananapi",
+      "color_only": false,
+      "zone": "B1",
+      "stock": 2,
+      "barcode": "ARM-0003",
+      "aliases": [
+        "บานาน่า",
+        "บานาน่าพาย",
+        "banana pi",
+        "bananapi",
+        "banana"
+      ],
+      "picks": 0
+    }
+  ]
+}

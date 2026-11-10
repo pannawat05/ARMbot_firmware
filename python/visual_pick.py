@@ -15,6 +15,8 @@ Usage (run with the .venv-cpu interpreter):
   python visual_pick.py --direction-test            # once: learn which way each servo moves
   python visual_pick.py --standby                   # ramp back to the start pose from wherever it stopped
   python visual_pick.py --rest                      # ramp to the raised rest pose
+  python visual_pick.py bananapi --learn-color      # save an object's colour from the camera
+  python visual_pick.py relay_module --teach --show --execute   # learn where the jaws' centre is in the image
   python visual_pick.py --grip-test                 # check a hand-placed object stays gripped through moves
   python visual_pick.py relay_module --color --detect --show --execute   # find it by colour, no grip
   python visual_pick.py relay_module --color --show --execute            # find by colour, grip and lift
@@ -92,6 +94,7 @@ VISUAL_CONFIG = ROOT / "calibration" / "visual_pick_config.json"
 TICK_S = 0.02
 DIRECTION_TEST_DEG = 8.0
 START_GAP_S = 0.4
+NEAR_LIMIT = 0.25  # how far, in image widths, a tracked blob may move between looks
 REST_SETTLE_S = 1.0  # let the arm stop at the rest pose before cutting PWM
 
 
@@ -245,9 +248,17 @@ class Arm:
             if not self.dry_run:
                 time.sleep(TICK_S)
 
-    def set_gripper(self, deg):
+    def set_gripper(self, deg, over_s=0.0):
+        """Move the gripper; over_s > 0 closes it gradually so one jaw does not knock the object away."""
         g = self.gripper
-        self.pca.set_pulse_us(g["channel"], angle_to_us(g["type"], deg))
+        start = getattr(self, "gripper_deg", None)
+        steps = max(1, int(over_s / TICK_S)) if over_s and start is not None else 1
+        for i in range(1, steps + 1):
+            now = deg if steps == 1 else start + (deg - start) * i / steps
+            self.pca.set_pulse_us(g["channel"], angle_to_us(g["type"], now))
+            if steps > 1 and not self.dry_run:
+                time.sleep(TICK_S)
+        self.gripper_deg = deg
         if not self.dry_run:
             time.sleep(g["settle_s"])
 
@@ -256,7 +267,7 @@ class Arm:
         self.rate = self.free_rate
 
     def close_gripper(self):
-        self.set_gripper(self.gripper["grip_deg"])
+        self.set_gripper(self.gripper["grip_deg"], self.gripper.get("close_s", 0.0))
         self.rate = self.carry_rate  # jerks can knock a held object loose
 
     def relax_gripper(self):
@@ -265,12 +276,14 @@ class Arm:
 
 
 class Detector:
-    def __init__(self, main_cfg, vcfg, class_name, show, use_color=False, moving=False):
+    def __init__(self, main_cfg, vcfg, class_name, show, use_color=False, moving=False, cam=None, model=None):
+        """cam and model let a long-running caller (the dashboard server) share one camera and YOLO."""
         self.palette = vcfg["color"]
         self.use_color = use_color
         # YOLO alone sees relays on a tool case, so a class with a colour must match it too.
         self.verify_color = not use_color and class_name in self.palette["classes"]
         self.confirmed = False  # YOLO has seen it on this approach; colour alone tracks it from here
+        self.track = None  # (u, v) of the blob being followed, so a bigger blob elsewhere is ignored
         if use_color:
             if class_name not in self.palette["classes"]:
                 raise SystemExit(f"No colour set for '{class_name}'. Known: {', '.join(self.palette['classes'])}")
@@ -279,7 +292,7 @@ class Detector:
             from ultralytics import YOLO
 
             torch.set_num_threads(3)  # measured fastest on the Pi 5; the default here is 1
-            self.model = YOLO(str(rel(main_cfg["yolo"]["weights"])))
+            self.model = model or YOLO(str(rel(main_cfg["yolo"]["weights"])))
             if class_name not in self.model.names.values():
                 raise SystemExit(f"'{class_name}' is not a YOLO class. Known: {', '.join(self.model.names.values())}")
             trained = str((self.model.ckpt or {}).get("date", "unknown"))
@@ -293,7 +306,7 @@ class Detector:
         self.flip = not vcfg["directions"]["image_upright"]
         self.aruco = aruco_detector(main_cfg["aruco"]["dictionary"])
         self.marker_id = main_cfg["aruco"]["tray_marker_id"]
-        self.cam = open_camera(main_cfg["camera"])
+        self.cam = cam or open_camera(main_cfg["camera"])
 
     def look_marker(self, status):
         """Like look, for the destination marker."""
@@ -313,12 +326,18 @@ class Detector:
             frame = cv2.rotate(frame, cv2.ROTATE_180)
         find = find or (self.find_color if self.use_color else self.find_yolo)
         best, best_box = find(frame)
-        if self.show:
+        publish = getattr(self.cam, "publish", None)  # the dashboard's shared camera
+        if self.show or publish:
             if best_box:
                 cv2.rectangle(frame, best_box[:2], best_box[2:], (0, 255, 0), 2)
                 cv2.putText(frame, f"{label or self.class_name} {best[0]:.2f}", (best_box[0], max(12, best_box[1] - 6)),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             cv2.putText(frame, status, (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+        if publish:
+            publish(frame)
+            if self.cam.stop_requested():
+                raise StopRequested
+        if self.show:
             cv2.imshow("visual_pick (q to stop)", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 raise StopRequested
@@ -338,11 +357,12 @@ class Detector:
         return None, None
 
     def find_yolo(self, frame):
-        blob, blob_box = None, None
         if self.verify_color:
             # The colour check takes 2 ms and YOLO about 700 ms, so only ask YOLO when there is a blob.
-            blob, blob_box = self.find_color(frame)
-            if blob is None or self.confirmed:
+            from_yolo = self.cfg.get("position_source", "color") == "yolo"
+            blob, blob_box = self.find_color(frame, self.track if self.confirmed else None)
+            if blob is None or (self.confirmed and not from_yolo):
+                self.track = blob[1:3] if blob else self.track
                 return blob, blob_box
         h, w = frame.shape[:2]
         result = self.model.predict(frame, imgsz=self.cfg["imgsz"], conf=0.1, device="cpu", verbose=False)[0]
@@ -358,13 +378,28 @@ class Detector:
                 best = (conf, (x1 + x2) / 2 / w, (y1 + y2) / 2 / h, area)
                 best_box = (int(x1), int(y1), int(x2), int(y2))
         if best and self.verify_color:
-            # YOLO says what it is; the colour blob says where, since YOLO boxes are often huge.
+            # YOLO says what it is; the colour blob under YOLO's box centre says where, since YOLO
+            # boxes are often huge. The largest blob may be something else of the same colour,
+            # such as the cardboard under the arm.
+            blob, blob_box = self.find_color(frame, best[1:3])
+            if blob is None:
+                return None, None
             self.confirmed = best[0] >= self.cfg["follow_confidence"]
+            self.track = blob[1:3]
+            if from_yolo and best[3] <= self.cfg["max_box_area_frac"]:
+                # Position = centre of YOLO's box: ((x1 + x2) / 2, (y1 + y2) / 2). A box that
+                # covers most of the frame says nothing about where the object is, so then
+                # the colour blob gives the position instead.
+                return best, best_box
             return (best[0],) + blob[1:], blob_box
         return best, best_box
 
-    def find_color(self, frame):
-        """Largest blob in the class's HSV range."""
+    def find_color(self, frame, near=None):
+        """Blob in the class's HSV range: the largest, or with near=(u, v) the one there.
+
+        With near, a blob whose box contains that point wins; otherwise the closest one
+        within NEAR_LIMIT of it, else nothing.
+        """
         import cv2
         import numpy as np
 
@@ -373,34 +408,64 @@ class Detector:
         mask = cv2.inRange(cv2.cvtColor(frame, cv2.COLOR_BGR2HSV), tuple(c["hsv_low"]), tuple(c["hsv_high"]))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
         contours = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]
-        if not contours:
-            return None, None
-        x, y, bw, bh = cv2.boundingRect(max(contours, key=cv2.contourArea))
-        area = bw * bh / (w * h)
-        if area < c.get("min_area_frac", self.palette["min_area_frac"]):
-            return None, None
         if c.get("circles"):
-            return self.find_circles(frame, c["circles"], (x, y, bw, bh))
+            return self.find_circle_pair(frame, c, near)
+        min_area = c.get("min_area_frac", self.palette["min_area_frac"])
+        rects = [cv2.boundingRect(k) for k in contours]
+        rects = [r for r in rects if r[2] * r[3] / (w * h) >= min_area]
+        if not rects:
+            return None, None
+        if near is None:
+            x, y, bw, bh = max(rects, key=lambda r: r[2] * r[3])
+        else:
+            nx, ny = near[0] * w, near[1] * h
+            inside = [r for r in rects if r[0] <= nx <= r[0] + r[2] and r[1] <= ny <= r[1] + r[3]]
+            dist = lambda r: math.hypot((r[0] + r[2] / 2 - nx) / w, (r[1] + r[3] / 2 - ny) / h)
+            if inside:
+                x, y, bw, bh = max(inside, key=lambda r: r[2] * r[3])
+            elif min(map(dist, rects)) <= NEAR_LIMIT:
+                x, y, bw, bh = min(rects, key=dist)
+            else:
+                return None, None
+        area = bw * bh / (w * h)
         return (1.0, (x + bw / 2) / w, (y + bh / 2) / h, area), (x, y, x + bw, y + bh)
 
-    def find_circles(self, frame, count, blob_rect):
-        """Centre of the round parts on a coloured board, e.g. the two HC-SR04 transducers."""
+    def find_circle_pair(self, frame, c, near=None):
+        """Two round parts of about the same size side by side on a board of the class colour,
+        e.g. the HC-SR04 transducers. The board colour alone is unreliable (it washes out under
+        bright light), so the circles find it and the colour only confirms it."""
         import cv2
+        import numpy as np
 
         h, w = frame.shape[:2]
-        x, y, bw, bh = blob_rect
         gray = cv2.medianBlur(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), 5)
         found = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 1.2, 40, param1=120, param2=40,
-                                 minRadius=15, maxRadius=90)
+                                 minRadius=12, maxRadius=90)
         if found is None:
             return None, None
-        near = [c for c in found[0] if x - c[2] <= c[0] <= x + bw + c[2] and y - c[2] <= c[1] <= y + bh + c[2]]
-        if len(near) < count:
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        board = cv2.inRange(hsv, tuple(c["board_hsv_low"]), tuple(c["board_hsv_high"]))
+        best = None
+        circles = [tuple(map(float, k)) for k in found[0][:8]]
+        for i, (x1, y1, r1) in enumerate(circles):
+            for x2, y2, r2 in circles[i + 1:]:
+                gap = math.hypot(x2 - x1, y2 - y1) / ((r1 + r2) / 2)
+                if max(r1, r2) / min(r1, r2) > 1.4 or not 1.8 <= gap <= 4.5:
+                    continue
+                r = (r1 + r2) / 2
+                x0, y0 = int(max(0, min(x1, x2) - r)), int(max(0, min(y1, y2) - r))
+                xe, ye = int(min(w, max(x1, x2) + r)), int(min(h, max(y1, y2) + r))
+                cover = board[y0:ye, x0:xe].mean() / 255 if xe > x0 and ye > y0 else 0
+                if cover < c["board_min_cover"]:
+                    continue
+                u, v = (x1 + x2) / 2 / w, (y1 + y2) / 2 / h
+                # Tracking: prefer the pair nearest the last position; otherwise the most board.
+                score = -math.hypot(u - near[0], v - near[1]) if near else cover
+                if best is None or score > best[0]:
+                    best = (score, (1.0, u, v, (xe - x0) * (ye - y0) / (w * h)), (x0, y0, xe, ye))
+        if best is None or (near and -best[0] > NEAR_LIMIT):
             return None, None
-        near = near[:count]
-        u = sum(float(c[0]) for c in near) / count / w
-        v = sum(float(c[1]) for c in near) / count / h
-        return (1.0, u, v, bw * bh / (w * h)), (x, y, x + bw, y + bh)
+        return best[1], best[2]
 
     def close(self):
         self.cam.close()
@@ -426,26 +491,34 @@ def search_step(arm, vcfg):
 
 
 def aim_step(arm, det, vcfg, min_tip=None):
-    """One correction toward the target point. False when aimed, None if the base cannot turn far enough."""
+    """One correction toward the target point. False when aimed, None if the base cannot turn far enough.
+
+    The base turn and the slide out or back happen in the same move, so each look corrects
+    both directions at once.
+    """
     a = vcfg["approach"]
     u_err = det[1] - a["target_u_frac"]
     v_err = det[2] - a["target_v_frac"]
+    deltas = {}
     if abs(u_err) > a["aim_deadband"]:
-        deltas = {"base": a["aim_turn_frac"] * a["base_deg_per_u"] * u_err}
-    elif abs(v_err) > a["aim_deadband"]:
+        deltas["base"] = a["aim_turn_frac"] * a["base_deg_per_u"] * u_err
+    if abs(v_err) > a["aim_deadband"] and (a.get("aim_both_axes", True) or not deltas):
+        # aim_both_axes false: turn the base first, slide only once it is lined up.
         # High in the image means it is further out. Shoulder and elbow turn by equal and
         # opposite amounts so the camera slides out or back without changing its tilt;
         # tilting instead would push the object off the top of the image.
         step = a["aim_gain_deg"] * v_err
-        deltas = {"shoulder": -step, "elbow": step}
-    else:
+        deltas.update(shoulder=-step, elbow=step)
+    if not deltas:
         return False
     target = arm.allowed(deltas, min_tip)
+    if (target is None or target == arm.pose) and "base" in deltas and len(deltas) > 1:
+        target = arm.allowed({"base": deltas["base"]}, min_tip)  # cannot slide any further: just turn
     if target is None or target == arm.pose:
         return None if "base" in deltas else False  # too low to get closer: lock on from here
     arm.ramp(target)
     if not arm.dry_run:
-        time.sleep(a["search_settle_s"])
+        time.sleep(a["aim_settle_s"])
     return True
 
 
@@ -474,15 +547,26 @@ def move_tip(arm, height_mm, reach_mm, step_mm=5.0):
           f"{reach_mm - arm.reach(arm.pose):.0f} mm short of the reach.")
 
 
-def descend(arm, u, vcfg):
-    """Turn to the object once, then go down to grip height without looking again."""
+def descend(arm, u, vcfg, v=None):
+    """Turn to the object once, then go down to grip height without looking again.
+
+    u corrects the base turn; v, if given, corrects how far out the jaws go, so the small
+    error left after aiming is taken out here instead of with more looks.
+    """
     a = vcfg["approach"]
-    arm.ramp(arm.allowed({"base": a["base_deg_per_u"] * (u - a["target_u_frac"])}))
+    # base_offset_deg corrects a steady sideways miss of the jaws (positive turns right).
+    arm.ramp(arm.allowed({"base": a["base_deg_per_u"] * (u - a["target_u_frac"]) + a.get("base_offset_deg", 0.0)}))
     # The object is under the lens and the jaws sit behind it: go out over it above
     # its height, then straight down.
     reach = arm.reach(arm.pose) + a["gripper_offset_mm"]
+    if v is not None:
+        reach += (a["target_v_frac"] - v) * a.get("mm_per_image_height", 0.0)  # high in the image = further out
     move_tip(arm, a["align_tip_mm"], reach)
-    move_tip(arm, a["grip_tip_mm"], reach)
+    rate, arm.rate = arm.rate, a.get("final_descent_deg_per_s", arm.rate)  # slow near the object
+    try:
+        move_tip(arm, a["grip_tip_mm"], reach)
+    finally:
+        arm.rate = rate
 
 
 def approach(arm, look, vcfg, clock=time.monotonic, max_sweeps=None):
@@ -505,7 +589,7 @@ def approach(arm, look, vcfg, clock=time.monotonic, max_sweeps=None):
               f"pose b{arm.pose['base']:+.0f} s{arm.pose['shoulder']:+.0f} e{arm.pose['elbow']:+.0f}")
         if det is not None and det[0] >= d["follow_confidence"]:
             last_seen = now
-            moved = aim_step(arm, det, vcfg) if a["aim_before_pick"] else False
+            moved = aim_step(arm, det, vcfg, a.get("aim_min_tip_mm")) if a["aim_before_pick"] else False
             if moved is None:
                 return False, "object is outside the base travel"
             if moved:
@@ -519,7 +603,8 @@ def approach(arm, look, vcfg, clock=time.monotonic, max_sweeps=None):
                 u = sum(s[1] for s in sightings) / len(sightings)
                 v = sum(s[2] for s in sightings) / len(sightings)
                 print(f"Detected {len(sightings)} times at u{u:.2f} v{v:.2f}. Going down.")
-                descend(arm, u, vcfg)
+                arm.aim_pose = dict(arm.pose)  # --teach comes back here to look again
+                descend(arm, u, vcfg, v)
                 return True, f"at grip height, tip ~{arm.tip_height(arm.pose):.0f} mm"
         elif last_seen is None:
             sweeps += search_step(arm, vcfg)
@@ -532,12 +617,12 @@ def approach(arm, look, vcfg, clock=time.monotonic, max_sweeps=None):
 
 def find_and_approach(arm, detector, vcfg, max_sweeps=None):
     """Run approach, going back to the start pose to look again whenever the object is lost."""
-    detector.confirmed = False
+    detector.confirmed, detector.track = False, None
     ok, reason = approach(arm, detector.look, vcfg, max_sweeps=max_sweeps)
     while reason == "object lost":
         print("Object lost. Going back to the start pose to look again.")
         arm.ramp(arm.start)
-        detector.confirmed = False
+        detector.confirmed, detector.track = False, None
         ok, reason = approach(arm, detector.look, vcfg, max_sweeps=max_sweeps)
     return ok, reason
 
@@ -626,7 +711,7 @@ def place_on_marker(arm, detector, vcfg, memory):
     return True
 
 
-def auto_run(arm, detector, vcfg, max_picks):
+def auto_run(arm, detector, vcfg, max_picks, wait_for_hand=True):
     """Pick, carry to the marker and drop, until nothing is left or max_picks is reached."""
     auto = vcfg["auto"]
     print("Automatic mode: pick, carry to the marker, drop, until nothing is left. Ctrl+C to stop.")
@@ -644,7 +729,7 @@ def auto_run(arm, detector, vcfg, max_picks):
         grip_and_lift(arm, reason, vcfg)
         if not place_on_marker(arm, detector, vcfg, memory):
             print("Stopping with the object still in the gripper.")
-            if not arm.dry_run:
+            if not arm.dry_run and wait_for_hand:
                 input("Hold a hand under it, then press Enter to open the gripper: ")
             arm.open_gripper()
             arm.relax_gripper()
@@ -656,6 +741,7 @@ def auto_run(arm, detector, vcfg, max_picks):
         picks += 1
         print(f"Pick {picks} done.")
     print(f"Finished: {picks} pick(s).")
+    return picks
 
 
 def grip_test(arm, vcfg):
@@ -679,6 +765,45 @@ def grip_test(arm, vcfg):
     arm.relax_gripper()
 
 
+def teach(arm, detector, vcfg, class_name, config_path):
+    """Learn where an object sits in the image when it is exactly between the jaws.
+
+    The arm aims and goes down as for a pick, without gripping. The user slides the object
+    to the centre of the open jaws; the arm goes back up to where it aimed and looks again.
+    That image position becomes this object's target, so later picks aim at it directly and
+    no camera-to-jaw distance has to be guessed.
+    """
+    print("Teach: the arm goes down beside the object without gripping.")
+    arm.go_start()
+    arm.open_gripper()
+    ok, reason = find_and_approach(arm, detector, vcfg)
+    if not ok:
+        print(f"Could not reach the object: {reason}.")
+        return
+    input("Slide the object so it sits centred between the open jaws, hands clear, then press Enter: ")
+    a = vcfg["approach"]
+    move_tip(arm, a["align_tip_mm"], arm.reach(arm.pose))  # straight up, clear of the object
+    arm.ramp(arm.aim_pose)
+    if not arm.dry_run:
+        time.sleep(1.0)
+    detector.confirmed, detector.track = False, None
+    seen = [d for d in (detector.look("teaching") for _ in range(5)) if d]
+    if len(seen) < 3:
+        print("The object is not clearly visible from the aiming pose; nothing saved.")
+        return
+    u = sorted(d[1] for d in seen)[len(seen) // 2]
+    v = sorted(d[2] for d in seen)[len(seen) // 2]
+    print(f"Centred between the jaws, {class_name} appears at u{u:.3f} v{v:.3f} "
+          f"(was aiming for u{a['target_u_frac']:.3f} v{a['target_v_frac']:.3f}).")
+    if not ask(f"Save this as the aim point for {class_name}?"):
+        return
+    raw = load_config(config_path)
+    entry = raw.setdefault("objects", {}).setdefault(class_name, {}).setdefault("approach", {})
+    entry.update(target_u_frac=round(u, 4), target_v_frac=round(v, 4), base_offset_deg=0.0)
+    Path(config_path).write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"Saved to {config_path} (objects.{class_name}.approach).")
+
+
 def detect_only(arm, detector, vcfg):
     """Find the object and go down to it, stopping there without gripping."""
     print("Going to the start pose, then finding the object and going down to it. Ctrl+C to stop.")
@@ -689,6 +814,58 @@ def detect_only(arm, detector, vcfg):
     else:
         print(f"Stopped: {reason}. Returning to the start pose.")
         arm.ramp(arm.start)
+
+
+def learn_color(frames, margin=(8, 40, 50), centre_frac=0.3):
+    """HSV range of whatever fills the centre of the frames, widened by margin.
+
+    Returns (hsv_low, hsv_high, hue_spread). A hue spread over about 40 means the centre
+    holds several colours (or red, which wraps around 0), so the range will catch too much.
+    """
+    import cv2
+    import numpy as np
+
+    h, w = frames[0].shape[:2]
+    y0, x0 = int(h * (1 - centre_frac) / 2), int(w * (1 - centre_frac) / 2)
+    px = np.concatenate([cv2.cvtColor(f, cv2.COLOR_BGR2HSV)[y0:h - y0, x0:w - x0].reshape(-1, 3)
+                         for f in frames])
+    lo, hi = np.percentile(px, 10, axis=0), np.percentile(px, 90, axis=0)
+    top = (179, 255, 255)
+    low = [int(max(0, lo[i] - margin[i])) for i in range(3)]
+    high = [int(min(top[i], hi[i] + margin[i])) for i in range(3)]
+    return low, high, float(hi[0] - lo[0])
+
+
+def learn_color_command(main_cfg, vcfg, class_name, config_path):
+    """Sample the object held in the middle of the camera view and save its colour range."""
+    input(f"Put the {class_name} flat on the table, filling the middle of the camera view, "
+          "then press Enter: ")
+    cam = open_camera(main_cfg["camera"])
+    try:
+        frames = [cam.read() for _ in range(6)][-4:]
+    finally:
+        cam.close()
+    low, high, spread = learn_color(frames)
+    print(f"HSV low {low}, high {high} (hue spread {spread:.0f})")
+    if spread > 40:
+        print("WARNING: the middle of the image holds several colours, so this range is wide "
+              "and may also match the table or other objects.")
+    vcfg["color"]["classes"][class_name] = {"hsv_low": low, "hsv_high": high}
+    d = Detector.__new__(Detector)
+    d.palette, d.class_name = vcfg["color"], class_name
+    found = d.find_color(frames[-1])[0]
+    print("Check on the same view:", f"found at u{found[1]:.2f} v{found[2]:.2f}, "
+          f"{found[3] * 100:.0f}% of the frame" if found else "nothing found; adjust and retry")
+    if found and ask(f"Save this colour for {class_name}?"):
+        Path(config_path).write_text(json.dumps(vcfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        print(f"Saved to {config_path}. YOLO picks of {class_name} are now confirmed by this colour.")
+
+
+def apply_object_settings(vcfg, class_name):
+    """Overlay the "objects" entry for this class on the shared sections, e.g. heights for a tall box."""
+    for section, values in vcfg.get("objects", {}).get(class_name, {}).items():
+        if isinstance(values, dict):
+            vcfg[section].update({k: v for k, v in values.items() if not k.startswith("_")})
 
 
 def ask(question):
@@ -741,6 +918,10 @@ def main():
     ap.add_argument("--rest", action="store_true", help="ramp to the raised rest pose and exit")
     ap.add_argument("--camera", choices=("serial", "usb"), help="override camera.source in the config")
     ap.add_argument("--trust-yolo", action="store_true", help="allow --execute on a class with no colour to confirm it")
+    ap.add_argument("--teach", action="store_true",
+                    help="learn the object's aim point by centring it between the jaws by hand")
+    ap.add_argument("--learn-color", action="store_true",
+                    help="sample the object's colour from the camera and save it; no motion")
     ap.add_argument("--color", action="store_true", help="find the object by colour instead of YOLO")
     ap.add_argument("--direction-test", action="store_true",
                     help="nudge each joint to learn its direction, save the result and exit")
@@ -785,6 +966,10 @@ def main():
         return
     if not args.object:
         ap.error("give the YOLO class name of the object to pick")
+    if args.learn_color:
+        learn_color_command(main_cfg, vcfg, args.object, args.visual_config)
+        return
+    apply_object_settings(vcfg, args.object)
 
     if not args.execute:
         print("DRY RUN: real camera, no servo output. Add --execute to move the arm.")
@@ -808,7 +993,10 @@ def main():
         if args.auto:
             auto_run(arm, detector, vcfg, args.max_picks)
         else:
-            (detect_only if args.detect else run_test)(arm, detector, vcfg)
+            if args.teach:
+                teach(arm, detector, vcfg, args.object, args.visual_config)
+            else:
+                (detect_only if args.detect else run_test)(arm, detector, vcfg)
         if not args.detect:
             print("Going to the rest pose.")
             arm.go_rest()
