@@ -43,9 +43,12 @@
     {#if error}
       <p class="error">{error}</p>
     {:else}
-      <!-- svelte-ignore a11y_media_has_caption -->
-      <video bind:this={video} playsinline muted></video>
-      <p>{scanOnly ? 'โหมดทดลอง: สแกนแล้วจะแสดงบาร์โค้ดเท่านั้น ไม่ส่งคำสั่งไปยังแขนกล' : 'เล็งกล้องไปที่บาร์โค้ดของชิ้นงาน'}</p>
+      <div class="viewfinder">
+        <!-- svelte-ignore a11y_media_has_caption -->
+        <video bind:this={video} playsinline muted></video>
+        <div class="aim-frame" aria-hidden="true"></div>
+      </div>
+      <p>{scanOnly ? 'จัดบาร์โค้ดให้อยู่ในกรอบกลาง โหมดทดลองจะไม่ส่งคำสั่งไปยังแขนกล' : 'จัดบาร์โค้ดให้อยู่ในกรอบกลางเพื่อสแกน'}</p>
     {/if}
     <button onclick={onclose}>ปิด</button>
   </div>
@@ -54,7 +57,31 @@
 <style>
   .overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.85); display: grid; place-items: center; z-index: 10; padding: 16px; }
   .box { width: min(480px, 100%); display: flex; flex-direction: column; gap: 10px; text-align: center; }
-  video { width: 100%; border-radius: 14px; background: #000; }
+  .viewfinder { position: relative; overflow: hidden; border-radius: 14px; background: #000; }
+  video { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; }
+  .aim-frame {
+    position: absolute;
+    left: 10%;
+    top: 35%;
+    width: 80%;
+    height: 30%;
+    border: 2px solid #ffb020;
+    border-radius: 10px;
+    box-shadow: 0 0 0 999px rgb(0 0 0 / 22%), 0 0 12px rgb(0 0 0 / 55%);
+    pointer-events: none;
+  }
+  .aim-frame::before,
+  .aim-frame::after {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    display: block;
+    content: '';
+    background: #ffb020;
+    transform: translate(-50%, -50%);
+  }
+  .aim-frame::before { width: 18px; height: 2px; }
+  .aim-frame::after { width: 2px; height: 18px; }
   .error { color: var(--bad); }
   button { padding: 12px; font-size: 1rem; }
 </style>
