@@ -31,7 +31,7 @@
     "shoulder_forward_sign": 1,
     "elbow_down_sign": -1,
     "image_upright": false,
-    "_note_image": "image_upright false rotates every camera frame 180 degrees. Set false on 2026-11-10: with the USB camera both image axes moved the wrong way while aiming."
+    "_note_image": "image_upright false rotates every camera frame 180 degrees. ESP32-CAM: true. USB camera (2026-11-10): false, as both image axes moved the wrong way while aiming."
   },
   "detection": {
     "imgsz": 640,
@@ -204,5 +204,27 @@
         "base_offset_deg": 4.7
       }
     }
+  },
+  "guess": {
+    "_note": "Object name 'unknown' (dashboard item 'unknown'): picks the solid thing nearest the middle of the image that is not the table colour, for objects YOLO has no class for. table_hsv_low/high is the table colour (the green mat). Only a circle of view_frac of the image round the aim point is searched. min_fill (area / box area) and min_size_px (shortest side) skip thin shapes such as cables; min/max_area_frac are of the whole image. ArUco markers are skipped, and so is anything that looks like white paper (over 75% colourless and over paper_bright_frac bright, with over paper_dark_frac black print), since a blurred marker is often missed by ArUco. A spot that moves less than arm_spot_frac of the image while the base turns arm_check_deg is part of the arm (a jaw or cable in view) and is ignored for the rest of that pick.",
+    "table_hsv_low": [
+      35,
+      40,
+      30
+    ],
+    "table_hsv_high": [
+      90,
+      255,
+      255
+    ],
+    "view_frac": 0.4,
+    "min_area_frac": 0.005,
+    "max_area_frac": 0.15,
+    "min_fill": 0.25,
+    "min_size_px": 20,
+    "arm_check_deg": 15,
+    "arm_spot_frac": 0.06,
+    "paper_bright_frac": 0.6,
+    "paper_dark_frac": 0.02
   }
 }

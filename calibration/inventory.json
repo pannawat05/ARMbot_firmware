@@ -1,5 +1,5 @@
 {
-  "_note": "Items the dashboard can order. yolo_class must match visual_pick.py; color_only uses colour detection instead of YOLO (as --color). aliases are matched inside spoken text (lower case). zone, stock and barcode are examples: edit them to the real shelf, count and printed barcode. stock and picks are updated by armbot_server.py after each successful pick.",
+  "_note": "Items the dashboard can order. yolo_class must match visual_pick.py; color_only uses colour detection instead of YOLO (as --color). aliases are matched inside spoken text (lower case). zone, stock and barcode are examples: edit them to the real shelf, count and printed barcode. stock and picks are updated by armbot_server.py after each successful pick. yolo_class \"unknown\" is the guess mode of visual_pick.py: it picks whatever stands out from the table, for objects YOLO has no class for.",
   "items": [
     {
       "id": "relay",
@@ -8,14 +8,14 @@
       "yolo_class": "relay_module",
       "color_only": false,
       "zone": "A1",
-      "stock": 5,
+      "stock": 4,
       "barcode": "ARM-0001",
       "aliases": [
         "รีเลย์",
         "รีเลย",
         "relay"
       ],
-      "picks": 2
+      "picks": 5
     },
     {
       "id": "ultrasonic",
@@ -24,7 +24,7 @@
       "yolo_class": "ultrasonic_hc-sr04",
       "color_only": true,
       "zone": "A2",
-      "stock": 5,
+      "stock": 1,
       "barcode": "ARM-0002",
       "aliases": [
         "อัลตราโซนิก",
@@ -34,7 +34,7 @@
         "hc-sr04",
         "hc sr04"
       ],
-      "picks": 5
+      "picks": 34
     },
     {
       "id": "bananapi",
@@ -51,6 +51,24 @@
         "banana pi",
         "bananapi",
         "banana"
+      ],
+      "picks": 1
+    },
+    {
+      "id": "unknown",
+      "name": "Unknown object (guess)",
+      "name_th": "ของอื่น (เดาเอง)",
+      "yolo_class": "unknown",
+      "color_only": true,
+      "zone": "C1",
+      "stock": 4,
+      "barcode": "ARM-0099",
+      "aliases": [
+        "ของอื่น",
+        "อะไรก็ได้",
+        "ไม่รู้จัก",
+        "unknown",
+        "any object"
       ],
       "picks": 1
     }

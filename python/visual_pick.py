@@ -23,6 +23,7 @@ Usage (run with the .venv-cpu interpreter):
   python visual_pick.py relay_module --color --auto --show --execute     # repeat pick and drop until none are left
   python visual_pick.py relay_module --auto --show --execute             # the same, YOLO confirmed by colour
   python visual_pick.py bananapi --show --execute   # move the real arm
+  python visual_pick.py unknown --detect --show     # guess: whatever stands out from the table
 
 Safety:
 - Hobby servos give no position feedback, so the first command jumps to the start
@@ -67,6 +68,10 @@ P = calibration/pick_place_config.json. "Base side" means toward the arm's base.
                                    also set STANDBY_DEG in servo_control_app.py to match
   Object not recognised, by colour "color" classes hsv_low, hsv_high, min_area_frac
   Sees objects that are not there  "detection" follow_confidence up (YOLO only)
+  unknown picks the table          "guess" table_hsv_low/high: widen it to cover the whole
+                                   table (unknown = the object YOLO has no class for)
+  unknown misses an object near    "guess" view_frac up, or min_area_frac down; a green
+    the edge of the image          object on the green table cannot be seen
   Arm stops at a joint limit       L *_max_deg; shoulder also needs P joints max_deg raised
 
 Heights come from L tip_offset_mm, set from one ruler measurement: 80 mm real when the
@@ -95,6 +100,7 @@ TICK_S = 0.02
 DIRECTION_TEST_DEG = 8.0
 START_GAP_S = 0.4
 NEAR_LIMIT = 0.25  # how far, in image widths, a tracked blob may move between looks
+GUESS_CLASS = "unknown"  # object name for something YOLO has no class for: find_guess finds it
 REST_SETTLE_S = 1.0  # let the arm stop at the rest pose before cutting PWM
 
 
@@ -279,12 +285,21 @@ class Detector:
     def __init__(self, main_cfg, vcfg, class_name, show, use_color=False, moving=False, cam=None, model=None):
         """cam and model let a long-running caller (the dashboard server) share one camera and YOLO."""
         self.palette = vcfg["color"]
-        self.use_color = use_color
+        self.guess = class_name == GUESS_CLASS
+        self.guess_cfg = vcfg["guess"]
+        self.aim = (vcfg["approach"]["target_u_frac"], vcfg["approach"]["target_v_frac"])
+        self.arm = None  # set by find_and_approach, so the guess can tell the arm's own parts
+        self.marker_finder = None  # blur-tolerant ArUco detector for the guess, made on first use
+        self.self_spots = []  # image spots that stayed put while the arm moved: part of the arm
+        self.seen = []  # (pose, u, v) since the guess started following its current spot
+        self.use_color = use_color or self.guess  # neither needs YOLO
         # YOLO alone sees relays on a tool case, so a class with a colour must match it too.
-        self.verify_color = not use_color and class_name in self.palette["classes"]
+        self.verify_color = not self.use_color and class_name in self.palette["classes"]
         self.confirmed = False  # YOLO has seen it on this approach; colour alone tracks it from here
         self.track = None  # (u, v) of the blob being followed, so a bigger blob elsewhere is ignored
-        if use_color:
+        if self.guess:
+            print("Guessing: picking whatever stands out from the table (no YOLO).")
+        elif use_color:
             if class_name not in self.palette["classes"]:
                 raise SystemExit(f"No colour set for '{class_name}'. Known: {', '.join(self.palette['classes'])}")
         else:
@@ -324,7 +339,7 @@ class Detector:
                 print("  Waiting for the camera...")
         if self.flip:
             frame = cv2.rotate(frame, cv2.ROTATE_180)
-        find = find or (self.find_color if self.use_color else self.find_yolo)
+        find = find or (self.find_guess if self.guess else self.find_color if self.use_color else self.find_yolo)
         best, best_box = find(frame)
         publish = getattr(self.cam, "publish", None)  # the dashboard's shared camera
         if self.show or publish:
@@ -395,11 +410,7 @@ class Detector:
         return best, best_box
 
     def find_color(self, frame, near=None):
-        """Blob in the class's HSV range: the largest, or with near=(u, v) the one there.
-
-        With near, a blob whose box contains that point wins; otherwise the closest one
-        within NEAR_LIMIT of it, else nothing.
-        """
+        """Blob in the class's HSV range: the largest, or with near=(u, v) the one there."""
         import cv2
         import numpy as np
 
@@ -412,7 +423,12 @@ class Detector:
             return self.find_circle_pair(frame, c, near)
         min_area = c.get("min_area_frac", self.palette["min_area_frac"])
         rects = [cv2.boundingRect(k) for k in contours]
-        rects = [r for r in rects if r[2] * r[3] / (w * h) >= min_area]
+        return self.choose_rect([r for r in rects if r[2] * r[3] / (w * h) >= min_area], w, h, near)
+
+    @staticmethod
+    def choose_rect(rects, w, h, near=None):
+        """Boxes (x, y, w, h) -> look result for the largest. With near=(u, v), a box that
+        contains that point wins; otherwise the closest one within NEAR_LIMIT of it, else nothing."""
         if not rects:
             return None, None
         if near is None:
@@ -429,6 +445,96 @@ class Detector:
                 return None, None
         area = bw * bh / (w * h)
         return (1.0, (x + bw / 2) / w, (y + bh / 2) / h, area), (x, y, x + bw, y + bh)
+
+    def find_guess(self, frame, near=None):
+        """Best guess at an object YOLO has no class for: the solid thing nearest the aim point
+        (the middle of the image) that is not the table colour (guess table_hsv, a green mat).
+        Only a circle of view_frac of the image round the aim point counts, so clutter at the
+        edges and the floor beyond the table never win, and objects touching each other there
+        are split by the circle. Thin shapes (cables, drawn lines) and the destination marker
+        (found by ArUco, or by looking like black-and-white print) are skipped. Once found, the
+        same spot is followed (self.track) until it is lost. A spot that stays put in the image
+        while the arm moves (a gripper jaw or cable in view) is part of the arm, and is ignored
+        for the rest of the pick."""
+        import cv2
+        import numpy as np
+
+        g = self.guess_cfg
+        h, w = frame.shape[:2]
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        table = cv2.inRange(hsv, tuple(g["table_hsv_low"]), tuple(g["table_hsv_high"]))
+        view = np.zeros_like(table)
+        ax, ay = int(self.aim[0] * w), int(self.aim[1] * h)
+        cv2.circle(view, (ax, ay), int(g["view_frac"] * min(w, h)), 255, -1)
+        mask = cv2.bitwise_and(view, cv2.bitwise_not(table))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        # Round the marker: its white edge and anything stuck to it, such as a note.
+        near_marker = np.zeros_like(mask)
+        for pts in self.marker_quads(frame):
+            centre = pts.mean(axis=0)
+            cv2.fillConvexPoly(near_marker, ((pts - centre) * 2.0 + centre).astype(np.int32), 255)
+        rects = []
+        for k in cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
+            x, y, bw, bh = cv2.boundingRect(k)
+            if near_marker[y:y + bh, x:x + bw][mask[y:y + bh, x:x + bw] > 0].any():
+                continue
+            if (cv2.contourArea(k) / (bw * bh) < g["min_fill"] or min(bw, bh) < g["min_size_px"]
+                    or not g["min_area_frac"] <= bw * bh / (w * h) <= g["max_area_frac"]):
+                continue
+            inside = mask[y:y + bh, x:x + bw] > 0  # this region's own pixels, not the table round it
+            s, v = hsv[y:y + bh, x:x + bw, 1][inside], hsv[y:y + bh, x:x + bw, 2][inside]
+            # An ArUco marker the detector missed (blurred, or a note stuck on it): white paper with
+            # some black print. A white lid is as bright but has no black; measured on the arm's frames.
+            print_like = ((s < 60).mean() > 0.75 and (v > 170).mean() > g["paper_bright_frac"]
+                          and (v < 80).mean() > g["paper_dark_frac"])
+            u, v = (x + bw / 2) / w, (y + bh / 2) / h
+            on_arm = any(math.hypot(u - su, v - sv) < g["arm_spot_frac"] for su, sv in self.self_spots)
+            if not print_like and not on_arm:
+                rects.append((x, y, bw, bh))
+        if self.track is None:
+            self.seen = []
+        near = near or self.track
+        if near is None and rects:  # first look: whatever is in front of the camera
+            rects = [min(rects, key=lambda r: math.hypot(r[0] + r[2] / 2 - ax, r[1] + r[3] / 2 - ay))]
+        best, box = self.choose_rect(rects, w, h, near)
+        self.track = best[1:3] if best else self.track
+        if best and self.arm is not None:
+            self.seen.append((dict(self.arm.pose), best[1], best[2]))
+            first, u0, v0 = self.seen[0]
+            # Only base turns count: the camera slide (shoulder and elbow in opposite directions)
+            # moves the joints a lot but the picture little.
+            moved = abs(self.arm.pose["base"] - first["base"])
+            if moved >= g["arm_check_deg"] and math.hypot(best[1] - u0, best[2] - v0) < g["arm_spot_frac"]:
+                print(f"  Ignoring u{best[1]:.2f} v{best[2]:.2f}: it stayed put while the arm moved "
+                      f"{moved:.0f} deg, so it is part of the arm.")
+                self.self_spots.append(best[1:3])
+                self.track, self.seen = None, []
+                return None, None
+        return best, box
+
+    def marker_quads(self, frame):
+        """Corners of the destination marker, found more often than with find_marker's detector:
+        it accepts blur and more bit errors, also tries a half-size image, and keeps only the
+        marker id, since the looser settings also report ids that are not there."""
+        import cv2
+
+        if self.marker_finder is None:
+            p = cv2.aruco.DetectorParameters()
+            p.adaptiveThreshWinSizeMin, p.adaptiveThreshWinSizeMax, p.adaptiveThreshWinSizeStep = 3, 53, 6
+            p.errorCorrectionRate = 1.0
+            p.polygonalApproxAccuracyRate = 0.08
+            p.minMarkerPerimeterRate = 0.02
+            self.marker_finder = cv2.aruco.ArucoDetector(self.aruco.getDictionary(), p)
+        quads = []
+        for scale in (1.0, 0.5):
+            img = frame if scale == 1.0 else cv2.resize(frame, None, fx=scale, fy=scale)
+            corners, ids, _ = self.marker_finder.detectMarkers(img)
+            quads += [c.reshape(4, 2) / scale for c, i in zip(corners, [] if ids is None else ids.flatten())
+                      if i == self.marker_id]
+            if quads:
+                break
+        return quads
 
     def find_circle_pair(self, frame, c, near=None):
         """Two round parts of about the same size side by side on a board of the class colour,
@@ -617,6 +723,7 @@ def approach(arm, look, vcfg, clock=time.monotonic, max_sweeps=None):
 
 def find_and_approach(arm, detector, vcfg, max_sweeps=None):
     """Run approach, going back to the start pose to look again whenever the object is lost."""
+    detector.arm = arm
     detector.confirmed, detector.track = False, None
     ok, reason = approach(arm, detector.look, vcfg, max_sweeps=max_sweeps)
     while reason == "object lost":

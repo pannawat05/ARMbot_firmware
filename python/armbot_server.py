@@ -57,6 +57,7 @@ DIST = ROOT / "dashboard" / "dist"
 CERT_DIR = ROOT / "python" / ".armbot_certs"
 STREAM_FPS = 8
 ANNOTATED_FRESH_S = 1.0  # show the pick overlay while picks keep publishing it
+CAMERA_RETRY_S = 5.0  # how often to try a camera that is missing or not sending frames
 LOG_LINES = 200
 
 
@@ -88,7 +89,8 @@ class CameraHub:
     """One camera reader thread; picks get fresh frames, the stream gets the newest JPEG."""
 
     def __init__(self, camera_cfg, rotate=False):
-        self.cam = open_camera(camera_cfg)
+        self.camera_cfg = camera_cfg
+        self.cam = None  # opened by the reader thread, so the dashboard starts without a camera
         self.rotate = rotate  # same 180 degree turn the picks apply (directions.image_upright false)
         self.cond = threading.Condition()
         self.frame, self.seq = None, 0
@@ -98,7 +100,19 @@ class CameraHub:
         threading.Thread(target=self._loop, daemon=True).start()
 
     def _loop(self):
+        failed = False
         while self.running:
+            if self.cam is None:
+                try:
+                    self.cam = open_camera(self.camera_cfg)
+                    print("Camera ready.")
+                    failed = False
+                except (SystemExit, Exception) as e:  # SerialCamera gives up with SystemExit
+                    if not failed:
+                        print(f"Camera not ready ({e}); retrying every {CAMERA_RETRY_S:.0f} s.")
+                        failed = True
+                    time.sleep(CAMERA_RETRY_S)
+                continue
             try:
                 frame = self.cam.read()
             except RuntimeError:
@@ -141,7 +155,8 @@ class CameraHub:
 
     def shutdown(self):
         self.running = False
-        self.cam.close()
+        if self.cam is not None:
+            self.cam.close()
 
 
 class Inventory:

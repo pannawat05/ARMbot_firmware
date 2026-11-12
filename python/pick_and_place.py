@@ -91,7 +91,7 @@ class SerialCamera:
 
         deadline = time.monotonic() + (timeout_s or self.timeout_s)
         while time.monotonic() < deadline:
-            jpeg = self.stream.read_latest()
+            jpeg = self.stream.read_latest(deadline)
             if jpeg is None:
                 continue
             img = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)

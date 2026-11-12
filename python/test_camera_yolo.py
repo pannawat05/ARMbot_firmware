@@ -87,13 +87,14 @@ class JpegStream:
             del self.buf[:-MAX_FRAME_BYTES]
         return True
 
-    def read_latest(self):
-        """Block until a full JPEG arrives; return the newest one. None on timeout."""
+    def read_latest(self, deadline=None):
+        """Block until a full JPEG arrives; return the newest one. None on timeout, or at the
+        time.monotonic() deadline even while bytes keep coming (an ESP32 stuck rebooting)."""
         while True:
             frame = self._extract_latest()
             if frame is not None:
                 break
-            if not self._fill():
+            if not self._fill() or (deadline is not None and time.monotonic() > deadline):
                 return None
         # Drop stale frames if we are slower than the camera (e.g. YOLO on CPU)
         while self.ser.in_waiting:
