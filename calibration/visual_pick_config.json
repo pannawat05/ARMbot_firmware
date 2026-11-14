@@ -8,12 +8,13 @@
   },
   "start_servo_deg": {
     "base": 90,
-    "shoulder": 90,
-    "elbow": 86
+    "shoulder": 85,
+    "elbow": 100
   },
   "hold_servo_deg": {
     "wrist_roll": 90,
-    "wrist_pitch": 150
+    "wrist_pitch": 160,
+    "_old_wrist_pitch": 150
   },
   "_note_rest": "rest_servo_deg: servo angles (as in servo_control_app.py) for the raised rest pose used after a run and when the program is stopped.",
   "rest_servo_deg": {
@@ -30,12 +31,13 @@
     "base_right_sign": -1,
     "shoulder_forward_sign": 1,
     "elbow_down_sign": -1,
-    "image_upright": false,
-    "_note_image": "image_upright false rotates every camera frame 180 degrees. ESP32-CAM: true. USB camera (2026-11-10): false, as both image axes moved the wrong way while aiming."
+    "image_upright": true,
+    "_note_image": "image_rotate_deg: clockwise degrees every camera frame is turned so the table shows the right way round (0, 90, 180 or 270); it replaces image_upright. 90 since 2026-11-13, after the ESP32-CAM was remounted turned 90 degrees CCW (checked on keyboard labels in the dashboard view). The USB webcam needed 180.",
+    "image_rotate_deg": 90
   },
   "detection": {
     "imgsz": 640,
-    "follow_confidence": 0.1,
+    "follow_confidence": 0.7,
     "_note_box": "Without a colour to confirm it, a YOLO box covering more of the frame than this is ignored. A class with a colour takes its position from the colour blob.",
     "max_box_area_frac": 0.7,
     "position_source": "yolo",
@@ -69,16 +71,32 @@
         ],
         "circles": 2,
         "board_hsv_low": [
+          95,
           80,
-          20,
-          100
+          40
         ],
         "board_hsv_high": [
-          125,
+          130,
           255,
           255
         ],
-        "board_min_cover": 0.15
+        "board_min_cover": 0.05,
+        "_old_board_hsv": {
+          "low": [
+            80,
+            20,
+            100
+          ],
+          "high": [
+            125,
+            255,
+            255
+          ],
+          "min_cover": 0.15
+        },
+        "_note_board": "Board check for the circle pair: the HC-SR04's PCB blue (hue 95-130, saturation over 80). 2026-11-13, ESP32-CAM: the old looser range (80-125, saturation from 20) took the green mat for the board, so keyboard keys passed as the sensor. On 649 recorded frames the new range found the sensor in every frame it was in, with no keyboard matches; min_cover 0.05 drops a scissor-handle match.",
+        "circle_spacing_mm": 27.0,
+        "_note_spacing": "circle_spacing_mm: centre-to-centre distance of the two transducers along the module's 45 mm long side, used as a ruler for where to land. Measured 26.4-28.0 mm on ESP32-CAM frames against the 45 mm board (2026-11-13)."
       },
       "bananapi": {
         "hsv_low": [
@@ -96,14 +114,14 @@
     "_note": "--color finds the object by HSV colour instead of YOLO. circles: the class is found as two same-size circles side by side on a board whose colour (board_hsv_low/high) covers at least board_min_cover of the box around them; the position is their midpoint. Measured on the USB camera, where the HC-SR04 board looks pale blue (S down to about 20)."
   },
   "approach": {
-    "_note_search": "Until the object is seen, step down this much per look, pause so the slow camera gets a still frame, and start over from the top at the bottom of the sweep.",
-    "search_elbow_step_deg": 2.0,
-    "search_shoulder_step_deg": 2.0,
-    "search_settle_s": 0.4,
+    "_note_search": "Until the object is seen, step down this much per look, pause so the slow camera gets a still frame, and at the bottom of the sweep go back to the top turned to the next base angle in search_base_deg (degrees, + = right), so the arm looks around. auto max_sweeps counts full rounds of these angles.",
+    "search_elbow_step_deg": 4.0,
+    "search_shoulder_step_deg": 4.0,
+    "search_settle_s": 0.2,
     "_note_target": "target_u_frac, target_v_frac: the image centre, so an aimed object sits under the lens. The arm then moves out by gripper_offset_mm, the measured lens to gripper centre distance.",
     "target_u_frac": 0.5,
     "lost_timeout_s": 6.0,
-    "ramp_deg_per_s": 30.0,
+    "ramp_deg_per_s": 60.0,
     "_note_commit": "After commit_detections sightings the arm turns once and goes down blind to align_tip_mm, moves out by gripper_offset_mm (the jaws sit behind the camera), then straight down to grip_tip_mm. base_deg_per_u: base degrees per image width.",
     "commit_detections": 3,
     "base_deg_per_u": 40.0,
@@ -117,14 +135,33 @@
     "gripper_offset_mm": 60.0,
     "aim_before_pick": true,
     "_note_aim": "Aiming (aim_before_pick true): each look turns the base and slides the camera together, aim_turn_frac of the base error and aim_gain_deg per image height, then waits aim_settle_s. base_deg_per_u 40 comes from a run where 10.8 degrees moved the object 0.28 of the image width.",
-    "base_offset_deg": 0.1,
+    "base_offset_deg": 0.0,
     "_note_base_offset": "base_offset_deg: added to the single base turn before going down (positive turns right, about 3 degrees per cm at the grip reach of about 187 mm). 2026-11-10: -6.1 after a 2 cm right miss; with YOLO box centres the jaws landed 1 cm left (-> -3.0), then 1 cm left again (-> 0.1).",
-    "aim_settle_s": 0.3,
+    "aim_settle_s": 0.15,
     "aim_both_axes": true,
     "_note_precision": "Accuracy (2026-11-10): aim roughly (aim_deadband 6%), then take commit_detections looks without moving and go down on their average, which smooths YOLO's box jitter. The leftover error is corrected while going down: across with base_deg_per_u, and out/back with mm_per_image_height (an estimate: 140 mm of table per image height at the aiming height; if the jaws land consistently short or long, tune gripper_offset_mm first).",
     "mm_per_image_height": 140.0,
-    "final_descent_deg_per_s": 8.0,
-    "_note_teach": "target_u_frac / target_v_frac per object come from --teach: the image position of the object when it is centred between the jaws, seen from the aiming pose. final_descent_deg_per_s: speed of the last move down onto the object."
+    "final_descent_deg_per_s": 20.0,
+    "_note_teach": "target_u_frac / target_v_frac per object come from --teach: the image position of the object when it is centred between the jaws, seen from the aiming pose. final_descent_deg_per_s: speed of the last move down onto the object.",
+    "search_base_deg": [
+      0,
+      -20,
+      20,
+      -40,
+      40,
+      -60,
+      60
+    ],
+    "_note_gripper_offset": "gripper_offset_mm: how far out (away from the base) the jaws go after the camera has centred the object. 60 is the value tuned on 2026-11-10; 2026-11-13 it was set to 40 from the camera's 4 cm physical offset, which is wrong: the camera is tilted forward, so its view centre is further ahead of the jaws than the camera is (measured about 65 mm for the HC-SR04).",
+    "aim_ref_tip_mm": 180.0,
+    "_note_aim_ref": "aim_ref_tip_mm: tip height at which base_deg_per_u and aim_gain_deg are right; below it both are scaled down by tip height / aim_ref_tip_mm. 2026-11-13: with the faster search the HC-SR04 was first seen at tip ~95 mm and aiming swung u 0.70 -> 0.28 -> 0.92 until it was lost.",
+    "teach_tip_mm": [
+      130.0
+    ],
+    "offset_ref_tip_mm": 130.0,
+    "gripper_offset_slope": 0.0,
+    "_note_slope": "gripper_offset_mm is how far ahead of the jaws the camera looks, measured at offset_ref_tip_mm; gripper_offset_slope adds that many mm per mm the aiming tip height is above it (the camera looks forward, so higher = further ahead). --teach measures both for objects with a size ruler (it looks at the tip heights in teach_tip_mm).",
+    "_old_gripper_offset_mm_2026_11_13": 40.0
   },
   "limits": {
     "_note": "Travel from the neutral pose. min_tip_height_mm uses the estimated link lengths and the wrist pitch from hold_servo_deg.",
@@ -139,13 +176,13 @@
     "_note_offset": "tip_offset_mm: measured 80 mm at the table when the estimate said 44 mm, so all heights are real table heights from one measured point."
   },
   "auto": {
-    "_note": "--auto: after lifting, carry the object to the destination marker (aruco.tray_marker_id). Stops after max_sweeps sweeps with nothing seen.",
-    "max_sweeps": 2
+    "_note": "--auto: after lifting, carry the object to the destination marker (aruco.tray_marker_id). Stops after max_sweeps full looks around (approach search_base_deg) with nothing seen.",
+    "max_sweeps": 1
   },
   "grip": {
-    "stop_settle_s": 0.5,
+    "stop_settle_s": 0.2,
     "lift_mm": 50.0,
-    "carry_deg_per_s": 10.0
+    "carry_deg_per_s": 25.0
   },
   "place": {
     "_note": "With an object held: go to the start pose, turn through scan_base_deg (offsets from the base neutral), then the next row, which lowers shoulder and elbow by that many degrees. Aim as for an object but stay above carry_tip_mm, move out by gripper_offset_mm at drop_tip_mm, then release.",
@@ -186,7 +223,7 @@
       },
       "detection": {
         "_note": "Any YOLO bananapi box (the model reports from 0.1) counts once the colour blob under it agrees.",
-        "follow_confidence": 0.1
+        "follow_confidence": 0.7
       },
       "grip": {
         "lift_mm": 80.0
@@ -195,14 +232,80 @@
     "ultrasonic_hc-sr04": {
       "_note": "HC-SR04: found by its two circles (colour only), not by YOLO.",
       "approach": {
-        "base_offset_deg": 7.2
+        "base_offset_deg": 3.28,
+        "_old_base_offset_deg": 7.2,
+        "_note_offset": "gripper_offset_mm 65, slope 0 (2026-11-13, from the video camfail.mp4): aimed from tip 160 mm with offset 17 (the multi-height teach fitted slope -1.19, wrong) the jaws closed about 50 mm short of the sensor, so about 65 is needed; this also fits 60 -> ~5 mm off, 40 -> ~25 mm short.",
+        "gripper_offset_mm": 125.0,
+        "target_u_frac": 0.5,
+        "target_v_frac": 0.5,
+        "gripper_offset_slope": 0.0,
+        "offset_ref_tip_mm": 130.0,
+        "_old_teach_2026_11_13": {
+          "gripper_offset_mm": 52.5,
+          "gripper_offset_slope": -1.188,
+          "base_offset_deg": 4.28
+        },
+        "grip_tip_mm": 30.0,
+        "_note_grip_tip": "grip_tip_mm 30 (was 38 shared): on 2026-11-13 the jaws stopped about 10 mm above the table at 38. Lower it 2-3 mm at a time if still too high; the jaws touch the table when it is too low.",
+        "aim_before_pick": false,
+        "commit_detections": 1,
+        "_note_first_detection": "2026-11-13: aim_before_pick false and commit_detections 1 = the pick starts on the first detection and trusts it (no aiming steps, no repeat sightings). Set aim_before_pick true and commit_detections 3 for the careful version."
       },
-      "_note_offset": "base_offset_deg: jaws landed about 13 mm left (on the left transducer instead of between the two) on 2026-11-10, so 0.1 + 4.0 deg (13 mm at the 187 mm grip reach)."
+      "_note_offset": "base_offset_deg: jaws landed about 13 mm left (on the left transducer instead of between the two) on 2026-11-10, so 0.1 + 4.0 deg (13 mm at the 187 mm grip reach).",
+      "grip": {
+        "width_mm": 8.0,
+        "_note_width": "width_mm 8 closes to the safe minimum, 50 deg (was 12 -> 55, before that 15 -> 61): the firmest the config allows. The 20 mm board stops the jaws near 72 deg, so the servo pushes against about 22 degrees of error. Never below gripper safe_min_deg (50) in pick_place_config.json: an SG90 pushing harder than that stalls and can burn out. 2026-11-13.",
+        "_old_width_mm": 15.0,
+        "slow_from_deg": 95.0,
+        "slow_deg_per_s": 40.0,
+        "_note_slow": "slow_from_deg 95: close quickly to 95 deg (a 28 mm gap, wider than the 20 mm board), then at slow_deg_per_s through the contact down to the grip angle. 2026-11-13: the module bounced out of the gripper when the jaws closed fast onto it.",
+        "_old_width_mm_2": 12.0
+      },
+      "limits": {
+        "min_tip_height_mm": 24.0
+      },
+      "detection": {
+        "follow_confidence": 0.7
+      },
+      "_note_detection": "2026-11-13: back to the circle pair for the HC-SR04 (inventory color_only true): the circle finder gives the position and mm ruler, conf 1.00 whenever it sees the module, so follow_confidence 0.7 is always met. The YOLO-box-centre settings it had are kept in _old_yolo_detection_2026_11_13 (YOLO saw the module in 7 of 16 ESP32-CAM frames, centre up to 13 mm off).",
+      "_old_yolo_detection_2026_11_13": {
+        "position_source": "yolo",
+        "yolo_only": true,
+        "max_box_area_frac": 1.0,
+        "follow_confidence": 0.5
+      }
     },
     "relay_module": {
       "approach": {
-        "base_offset_deg": 4.7
-      }
+        "base_offset_deg": 0.0,
+        "_old_base_offset_deg": 4.7,
+        "aim_before_pick": false,
+        "commit_detections": 1
+      },
+      "grip": {
+        "_note_width": "No width_mm yet: the jaws open only 53 mm, so the board's 55 mm side cannot be what they hold. Measure the part between the jaws and set width_mm; until then grip_deg (50) is used.",
+        "slow_from_deg": 125.0,
+        "slow_deg_per_s": 40.0
+      },
+      "detection": {
+        "position_source": "yolo",
+        "yolo_only": true,
+        "max_box_area_frac": 1.0,
+        "follow_confidence": 1.0
+      },
+      "_note": "2026-11-13, same as the HC-SR04: pick at the centre of YOLO's best box at any size, no colour check (detection yolo_only); the pick starts on the first detection with conf 0.8 or more (commit_detections 1, aim_before_pick false); two-speed gripper close (grip slow_from_deg: quick down to 125 deg, then slow_deg_per_s through the contact). The relay has no size ruler, so the landing uses the fixed base_deg_per_u and mm_per_image_height estimates, which are least accurate for an off-centre first sighting; slow_from_deg 125 is a guess for the relay's width: raise it if the jaws touch the board before the slow part. follow_confidence 1.0 (2026-11-13): conf is 1.00 when YOLO's box has a blob of the relay's blue at its centre, otherwise YOLO's own confidence, so only a colour-backed detection starts a pick."
+    },
+    "unknown": {
+      "approach": {
+        "aim_before_pick": false,
+        "commit_detections": 1,
+        "grip_tip_mm": 30.0
+      },
+      "_note": "2026-11-13: the guess pick starts on the first detection and trusts it (no aiming steps, one sighting), like the HC-SR04 and relay. Guess objects have no size ruler, so the landing uses the fixed base_deg_per_u and mm_per_image_height estimates, and the 'part of the arm' check (which needs the base to turn between looks) never runs.",
+      "limits": {
+        "min_tip_height_mm": 24.0
+      },
+      "_note_grip_tip": "grip_tip_mm 30 and min_tip_height_mm 24 (same as the HC-SR04): at the shared 38 the jaws stop about 10 mm above the table, which misses anything low. 2026-11-13."
     }
   },
   "guess": {
@@ -226,5 +329,22 @@
     "arm_spot_frac": 0.06,
     "paper_bright_frac": 0.6,
     "paper_dark_frac": 0.02
+  },
+  "motion": {
+    "_note": "Every arm move speeds up at accel_deg_per_s2 to its top speed (approach ramp_deg_per_s, grip carry_deg_per_s when holding), holds it, and slows down at the same rate before the target, so it starts and stops without a jerk. carry_accel_deg_per_s2 is used while an object is held. Lower = smoother but slower.",
+    "accel_deg_per_s2": 400.0,
+    "carry_accel_deg_per_s2": 150.0
+  },
+  "_old_speeds_2026_11_13": {
+    "approach.ramp_deg_per_s": 30.0,
+    "approach.final_descent_deg_per_s": 8.0,
+    "approach.search_settle_s": 0.4,
+    "approach.aim_settle_s": 0.3,
+    "approach.search_elbow_step_deg": 2.0,
+    "approach.search_shoulder_step_deg": 2.0,
+    "grip.stop_settle_s": 0.5,
+    "grip.carry_deg_per_s": 10.0,
+    "motion.accel_deg_per_s2": 120.0,
+    "motion.carry_accel_deg_per_s2": 40.0
   }
 }

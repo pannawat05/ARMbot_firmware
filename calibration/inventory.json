@@ -8,14 +8,14 @@
       "yolo_class": "relay_module",
       "color_only": false,
       "zone": "A1",
-      "stock": 4,
+      "stock": 9,
       "barcode": "ARM-0001",
       "aliases": [
         "รีเลย์",
         "รีเลย",
         "relay"
       ],
-      "picks": 5
+      "picks": 10
     },
     {
       "id": "ultrasonic",
@@ -24,7 +24,7 @@
       "yolo_class": "ultrasonic_hc-sr04",
       "color_only": true,
       "zone": "A2",
-      "stock": 1,
+      "stock": 7,
       "barcode": "ARM-0002",
       "aliases": [
         "อัลตราโซนิก",
@@ -34,7 +34,7 @@
         "hc-sr04",
         "hc sr04"
       ],
-      "picks": 34
+      "picks": 44
     },
     {
       "id": "bananapi",
@@ -61,7 +61,7 @@
       "yolo_class": "unknown",
       "color_only": true,
       "zone": "C1",
-      "stock": 4,
+      "stock": 10,
       "barcode": "ARM-0099",
       "aliases": [
         "ของอื่น",
@@ -70,7 +70,7 @@
         "unknown",
         "any object"
       ],
-      "picks": 1
+      "picks": 2
     }
   ]
 }

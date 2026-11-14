@@ -49,12 +49,13 @@
   async function order(o) {
     const item = o.item_id ? items.find((i) => i.id === o.item_id) : o.barcode ? items.find((i) => i.barcode === o.barcode) : findItem(o.text ?? '');
     if (!item) throw new Error('ไม่พบของชิ้นนี้');
-    await link.queue({ item_id: item.id, source: o.source });
-    show(`เพิ่ม ${item.name_th} เข้าคิวแล้ว`);
+    const count = Math.max(1, Math.min(Math.round(o.count ?? 1), Math.max(1, item.stock)));
+    await link.queue({ item_id: item.id, source: o.source, count });
+    show(`เพิ่ม ${item.name_th}${count > 1 ? ` ${count} ชิ้น` : ''} เข้าคิวแล้ว`);
     return { item };
   }
 
-  const pick = (item) => order({ item_id: item.id, source: 'click' }).catch((e) => show(`สั่งไม่สำเร็จ: ${e.message}`));
+  const pick = (item, count = 1) => order({ item_id: item.id, source: 'click', count }).catch((e) => show(`สั่งไม่สำเร็จ: ${e.message}`));
 
   function byCode(code) {
     beep(1200, 80);

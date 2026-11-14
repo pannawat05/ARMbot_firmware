@@ -48,7 +48,7 @@ the camera readers, ArUco helper and `--preview` / `--aruco-preview`.
 | 2 | Shoulder | TD-8125MG (25 kg) | |
 | 3 | Elbow | MG996R | |
 | 4 | Wrist roll | SG90 | Not driven by visual_pick, held at 90 by Close & hold. |
-| 5 | Wrist pitch | SG90 | Held at 150 so the camera looks at the table. |
+| 5 | Wrist pitch | SG90 | Held at 160 (150 until 2026-11-13) so the camera looks at the table. |
 | 6 | Gripper | SG90 | 50 = grip, 150 = open. |
 
 All channel numbers are PCA9685 channels as wired (assumed from the user's list, confirmed by use).
@@ -59,13 +59,13 @@ All channel numbers are PCA9685 channels as wired (assumed from the user's list,
   - shoulder: servo angle up = upper arm leans forward (`shoulder_forward_sign: 1`)
   - elbow: servo angle **down** = forearm down (`elbow_down_sign: -1`)
   - base: servo angle up = arm turns left seen from behind (`base_right_sign: -1`)
-- Start / standby pose: base 90, shoulder 90, elbow 86 (was 70; raised about 3 cm on 2026-11-10), wrist roll 90, wrist pitch 150.
+- Start / standby pose: base 90, shoulder 85, elbow 100 (elbow was 70, then 86 on 2026-11-10; shoulder 90 and elbow 86 until 2026-11-13, raised about 4 cm), wrist roll 90, wrist pitch 160.
   This is `STANDBY_DEG` in `servo_control_app.py` and `start_servo_deg` + `hold_servo_deg` in the config.
 - Link lengths in `calibration/pick_place_config.json` (`arm` section) are **estimates from a drawing**,
   never measured: shoulder height 50.87, upper arm 113.12, forearm 97.05, tool 46.0 mm.
 - Height correction: `tip_offset_mm: 36` was set from **one** ruler measurement (real tip height 80 mm
   where the model said 44 mm). Heights near 80 mm are fair; low heights (25 to 40 mm) are less certain.
-- The model assumes the tool is tilted 60 degrees below the forearm line because wrist pitch is 150.
+- The model assumes the tool is tilted 70 degrees below the forearm line because wrist pitch is 160.
 - Measured: camera lens to gripper centre = **8 cm** (user measured, Nubwo camera). Used as `gripper_offset_mm`.
 
 ## 3. Software layout

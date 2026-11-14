@@ -3,17 +3,19 @@
 
   "camera": {
     "_note_source": "source: serial = ESP32-CAM on port, usb = webcam whose name contains usb_name. --camera overrides it.",
-    "source": "usb",
+    "source": "serial",
     "usb_name": "USB Camera",
     "usb_mirror": false,
-    "port": "/dev/ttyUSB0",
+    "port": "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0",
     "baud": 460800,
     "width": 640,
     "height": 480,
     "frames_to_average": 7,
     "frame_timeout_s": 10,
     "_note_mirror": "The ESP32-CAM image is left-right mirrored; true flips it back in SerialCamera.",
-    "mirror": true
+    "mirror": true,
+    "_note_delay": "frame_delay_s: how far behind the camera runs. Each look in visual_pick.py skips frames until this long after the arm stopped, so it never aims with a picture taken mid-move. The ESP32-CAM sends each JPEG over serial at 460800 baud (about 0.3-0.5 s); on 2026-11-13 aiming saw the arm's previous position. Raise it if the aim still swings.",
+    "frame_delay_s": 0.6
   },
 
   "yolo": {
@@ -71,7 +73,7 @@
       {"name": "base",        "channel": 1, "type": "MG996R",    "center_deg": 90, "direction": 1,  "min_deg": 30, "max_deg": 150, "enabled": true},
       {"name": "shoulder",    "channel": 2, "type": "TD-8125MG", "center_deg": 90, "direction": 1,  "min_deg": 30, "max_deg": 160, "enabled": true},
       {"name": "elbow",       "channel": 3, "type": "MG996R",    "center_deg": 90, "direction": 1,  "min_deg": 30, "max_deg": 150, "enabled": true},
-      {"name": "wrist_pitch", "channel": 5, "type": "SG90",      "center_deg": 90, "direction": 1,  "min_deg": 30, "max_deg": 150, "enabled": false},
+      {"name": "wrist_pitch", "channel": 5, "type": "SG90",      "center_deg": 90, "direction": 1,  "min_deg": 30, "max_deg": 170, "enabled": false},
       {"name": "wrist_roll",  "channel": 4, "type": "SG90",      "center_deg": 90, "direction": 1,  "min_deg": 30, "max_deg": 150, "enabled": false},
       {"name": "spare",       "channel": null, "type": "SG90",   "center_deg": 90, "direction": 1,  "min_deg": 30, "max_deg": 150, "enabled": false}
     ],
@@ -84,9 +86,16 @@
     "open_deg": 150,
     "_note_grip": "visual_pick.py closes to grip_deg and keeps PWM on until release. 50 matches the Grip button in servo_control_app.py.",
     "grip_deg": 50,
-    "settle_s": 0.8,
+    "settle_s": 0.3,
     "_note_close": "close_s: seconds to close the jaws gradually, so the first jaw to touch does not flick the object away.",
-    "close_s": 0.6
+    "close_s": 0.3,
+    "open_s": 0.2,
+    "_note_size": "Grip angle from the object's width (visual_pick_config objects <name> grip width_mm): the jaws are taken to open evenly with the angle, from jaw_closed_deg (jaws just touching) to open_deg (jaw_open_mm apart), and close squeeze_mm narrower than the object so it is held firmly. jaw_closed_deg and jaw_open_mm measured 2026-11-13. Objects without width_mm use grip_deg.",
+    "jaw_closed_deg": 35,
+    "jaw_open_mm": 53.0,
+    "squeeze_mm": 3.0,
+    "_note_safe": "safe_min_deg: the gripper is never commanded below this. Further closed, an SG90 pushing on a hard object stalls, draws high current and can burn out.",
+    "safe_min_deg": 50
   },
 
   "ddqn": {

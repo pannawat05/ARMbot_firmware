@@ -1,6 +1,15 @@
 <script>
-  // Desktop: every item with stock, zone and pick count; filter by text or zone.
+  // Desktop: every item with stock, zone and pick count; filter by text or zone. Set how many
+  // to pick in the number box, then press the pick button.
+  import QuantityInput from './QuantityInput.svelte';
+
   let { items, onpick } = $props();
+  let counts = $state({}); // item id -> number to pick (1 when untouched)
+  function order(item) {
+    const n = Math.min(counts[item.id] ?? 1, Math.max(1, item.stock));
+    counts[item.id] = 1;
+    onpick(item, n);
+  }
   let query = $state('');
   let zone = $state('');
   const zones = $derived([...new Set(items.map((i) => i.zone))].sort());
@@ -23,7 +32,7 @@
 
 <table>
   <thead>
-    <tr><th>ชื่อ</th><th>โซน</th><th class="num">คงเหลือ</th><th class="num">ถูกหยิบ</th><th>บาร์โค้ด</th><th></th></tr>
+    <tr><th>ชื่อ</th><th>โซน</th><th class="num">คงเหลือ</th><th class="num">ถูกหยิบ</th><th>บาร์โค้ด</th><th>จำนวนที่จะหยิบ</th><th></th></tr>
   </thead>
   <tbody>
     {#each shown as item (item.id)}
@@ -33,10 +42,11 @@
         <td class="num" class:low={item.stock <= 1}>{item.stock}</td>
         <td class="num">{item.picks}</td>
         <td><code>{item.barcode}</code></td>
-        <td><button onclick={() => onpick(item)} disabled={item.stock <= 0}>หยิบ</button></td>
+        <td><QuantityInput bind:value={counts[item.id]} max={item.stock} disabled={item.stock <= 0} /></td>
+        <td><button onclick={() => order(item)} disabled={item.stock <= 0}>หยิบ{(counts[item.id] ?? 1) > 1 ? ` ${counts[item.id]} ชิ้น` : ''}</button></td>
       </tr>
     {:else}
-      <tr><td colspan="6" class="empty">ไม่พบรายการ</td></tr>
+      <tr><td colspan="7" class="empty">ไม่พบรายการ</td></tr>
     {/each}
   </tbody>
 </table>

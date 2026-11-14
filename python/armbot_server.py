@@ -14,7 +14,7 @@ Usage (run with the .venv-cpu interpreter, from python/):
 Open https://<pi address>:8443 . Phones need HTTPS for the microphone and camera, so a
 self-signed certificate is made on first start; accept the browser warning once.
 
-API: GET /api/items, GET /api/status, POST /api/queue {"item_id"|"barcode"|"text"},
+API: GET /api/items, GET /api/status, POST /api/queue {"item_id"|"barcode"|"text", "count"},
 DELETE /api/queue/<id>, POST /api/stop, GET /stream.mjpg, GET /mqtt.json.
 
 MQTT (calibration/mqtt.json, skipped with --no-mqtt), with <p> the prefix ("armbot"):
@@ -56,6 +56,7 @@ MQTT_CONFIG = ROOT / "calibration" / "mqtt.json"
 DIST = ROOT / "dashboard" / "dist"
 CERT_DIR = ROOT / "python" / ".armbot_certs"
 STREAM_FPS = 8
+MAX_PICKS_PER_JOB = 20  # a queue command asking for more is cut to this
 ANNOTATED_FRESH_S = 1.0  # show the pick overlay while picks keep publishing it
 CAMERA_RETRY_S = 5.0  # how often to try a camera that is missing or not sending frames
 LOG_LINES = 200
@@ -88,10 +89,10 @@ class LogTee:
 class CameraHub:
     """One camera reader thread; picks get fresh frames, the stream gets the newest JPEG."""
 
-    def __init__(self, camera_cfg, rotate=False):
+    def __init__(self, camera_cfg, turn=0):
         self.camera_cfg = camera_cfg
         self.cam = None  # opened by the reader thread, so the dashboard starts without a camera
-        self.rotate = rotate  # same 180 degree turn the picks apply (directions.image_upright false)
+        self.turn = turn  # the same clockwise turn the picks apply (vp.image_turn)
         self.cond = threading.Condition()
         self.frame, self.seq = None, 0
         self.annotated, self.annotated_at = None, 0.0
@@ -116,6 +117,14 @@ class CameraHub:
             try:
                 frame = self.cam.read()
             except RuntimeError:
+                continue
+            except Exception as e:  # e.g. the USB cable moved and the camera reconnected
+                print(f"Camera lost ({type(e).__name__}: {e}); reopening.")
+                try:
+                    self.cam.close()
+                except Exception:
+                    pass
+                self.cam = None
                 continue
             with self.cond:
                 self.frame, self.seq = frame, self.seq + 1
@@ -144,8 +153,8 @@ class CameraHub:
             frame = self.annotated if fresh else self.frame
         if frame is None:
             return None
-        if self.rotate and not fresh:
-            frame = cv2.rotate(frame, cv2.ROTATE_180)
+        if not fresh:
+            frame = vp.turn_frame(frame, self.turn)
         if size:
             frame = cv2.resize(frame, size)
         return cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])[1].tobytes()
@@ -210,10 +219,17 @@ class Robot:
         self.wake = threading.Event()
         threading.Thread(target=self._worker, daemon=True).start()
 
-    def add(self, item, source):
+    def add(self, item, source, count=1):
+        """Queue count picks of this item as one job; never more than the stock (at least 1)."""
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            count = 1
+        count = max(1, min(count, item["stock"] if item["stock"] > 0 else 1, MAX_PICKS_PER_JOB))
         with self.lock:
             job = {"id": self.next_id, "item_id": item["id"], "name": item["name"], "name_th": item["name_th"],
-                   "source": source, "state": "queued", "message": "", "created": time.time()}
+                   "source": source, "count": count, "done": 0, "state": "queued", "message": "",
+                   "created": time.time()}
             self.next_id += 1
             self.jobs.append(job)
         self.wake.set()
@@ -263,15 +279,34 @@ class Robot:
                 continue
             self.state = "picking"
             self.hub.stop_event.clear()
-            ok, message = self._pick(job)
+            ok, message = self._run_job(job)
             with self.lock:
                 job["state"], job["message"] = ("done" if ok else "failed"), message
-            if ok:
-                self.inventory.record_pick(job["item_id"])
+
+    def _run_job(self, job):
+        """Pick the job's count, one full cycle each, stopping at the first failure or when the stock runs out."""
+        count = job.get("count", 1)
+        for n in range(count):
+            item = self.inventory.find(item_id=job["item_id"])
+            if n and item["stock"] <= 0:
+                return False, f"{job['done']}/{count}: out of stock"
+            if count > 1:
+                print(f"-- {job['name']}: pick {n + 1} of {count}")
+            ok, message = self._pick(job)
+            if not ok:
+                return False, message if count == 1 else f"{job['done']}/{count}: {message}"
+            self.inventory.record_pick(job["item_id"])
+            with self.lock:
+                job["done"] += 1
+        return True, "picked and placed" if count == 1 else f"picked and placed {count}/{count}"
 
     def _pick(self, job):
         item = self.inventory.find(item_id=job["item_id"])
         print(f"== Job {job['id']}: {item['name']}")
+        # Read the settings again for every pick, so tuning the config needs no restart
+        # (the camera settings are the exception: they apply at start).
+        self.main_cfg = vp.load_config(vp.DEFAULT_CONFIG)
+        self.vcfg = vp.load_config(vp.VISUAL_CONFIG)
         vcfg = copy.deepcopy(self.vcfg)
         vp.apply_object_settings(vcfg, item["yolo_class"])
         try:
@@ -295,7 +330,9 @@ class Robot:
         except Exception as e:  # keep the server alive; the message shows on the dashboard
             print(f"Pick failed: {type(e).__name__}: {e}")
             return False, f"{type(e).__name__}: {e}"
-        return (picks == 1), ("picked and placed" if picks == 1 else "not found")
+        if picks == 1:
+            return True, "picked and placed"
+        return False, getattr(detector, "stop_reason", None) or "not found"
 
     def _rest(self):
         self.state = "resting"
@@ -352,7 +389,9 @@ class MqttBridge:
             if item is None:
                 self._send("event", {"type": "unknown", "query": body})
             else:
-                self._send("event", {"type": "queued", "job": self.robot.add(item, body.get("source", "mqtt")),
+                self._send("event", {"type": "queued",
+                                     "job": self.robot.add(item, body.get("source", "mqtt"),
+                                                           body.get("count", body.get("quantity", 1))),
                                      "item": item})
         elif cmd == "cancel":
             self.robot.cancel(int(body.get("id", 0)))
@@ -443,7 +482,8 @@ def make_handler(robot, inventory, hub, log, mqtt_cfg=None):
                                       text=body.get("text"))
                 if item is None:
                     return self._json({"error": "unknown item", "query": body}, 404)
-                return self._json({"job": robot.add(item, body.get("source", "click")), "item": item})
+                return self._json({"job": robot.add(item, body.get("source", "click"),
+                                                    body.get("count", body.get("quantity", 1))), "item": item})
             if path == "/api/stop":
                 return self._json({"stopping": robot.stop()})
             self._json({"error": "not found"}, 404)
@@ -518,7 +558,7 @@ def main():
     inventory = Inventory(INVENTORY)
     camera_cfg = vp.load_config(vp.DEFAULT_CONFIG)["camera"]
     camera_cfg["source"] = args.camera or camera_cfg["source"]
-    hub = CameraHub(camera_cfg, rotate=not vp.load_config(vp.VISUAL_CONFIG)["directions"]["image_upright"])
+    hub = CameraHub(camera_cfg, turn=vp.image_turn(vp.load_config(vp.VISUAL_CONFIG)["directions"]))
     robot = Robot(args.execute, inventory, hub)
     mqtt_cfg = None if args.no_mqtt or not MQTT_CONFIG.exists() else json.loads(MQTT_CONFIG.read_text("utf-8"))
     bridge = MqttBridge(mqtt_cfg, robot, inventory, log, hub) if mqtt_cfg else None

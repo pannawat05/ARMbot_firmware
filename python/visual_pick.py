@@ -54,7 +54,11 @@ P = calibration/pick_place_config.json. "Base side" means toward the arm's base.
     way out over it                                             the object
   Object lifted too little/much    "grip" lift_mm               mm straight up after gripping
   Object shaken loose when carried "grip" carry_deg_per_s down  slower moves while holding
-  Grip too weak                    P gripper grip_deg   down    small steps; below 50 risks a stall
+  Grip too weak                    "objects" <name> grip width_mm down, or P gripper squeeze_mm
+                                   up; never below P safe_min_deg (stall)
+  Grip too hard / servo buzzes     width_mm up, or squeeze_mm down
+  Moves start or stop with a jerk  "motion" accel_deg_per_s2 down (carry_accel_ when holding)
+  Moves too sluggish               accel_deg_per_s2 up, or A ramp_deg_per_s up
   Jaws do not open enough          P gripper open_deg   up      150 is the known open angle
   Whole arm too slow or too jerky  A ramp_deg_per_s             degrees per second, not holding
   Dropped too high or too low      "place" drop_tip_mm          height of release at the marker
@@ -100,7 +104,50 @@ TICK_S = 0.02
 DIRECTION_TEST_DEG = 8.0
 START_GAP_S = 0.4
 NEAR_LIMIT = 0.25  # how far, in image widths, a tracked blob may move between looks
+TEACH_STEPS_MM = (0, -20, 20, -40, 40, -60, 60)
+MAX_TEACH_SLOPE = 0.5  # largest believable change of the camera-to-jaw offset per mm of aiming height  # --teach: tip moves along the reach to find the object
 GUESS_CLASS = "unknown"  # object name for something YOLO has no class for: find_guess finds it
+
+
+def image_turn(directions):
+    """Clockwise degrees to turn every camera frame so it shows the table the right way round:
+    directions image_rotate_deg (0, 90, 180 or 270), else 180 for the older image_upright false."""
+    return directions.get("image_rotate_deg", 0 if directions.get("image_upright", True) else 180) % 360
+
+
+def turn_frame(frame, deg):
+    import cv2
+
+    turns = {90: cv2.ROTATE_90_CLOCKWISE, 180: cv2.ROTATE_180, 270: cv2.ROTATE_90_COUNTERCLOCKWISE}
+    return cv2.rotate(frame, turns[deg]) if deg else frame
+
+
+def motion_profile(span, rate, accel):
+    """Fractions of a move of span degrees, one per TICK_S. The speed rises at accel up to
+    rate, holds there, then falls at the same accel, so a move starts and stops without the
+    jerk of jumping straight to full speed. Short moves never reach rate (a triangle)."""
+    if span <= 0:
+        return [1.0]
+    t_acc = rate / accel
+    if span < rate * t_acc:
+        t_acc = math.sqrt(span / accel)
+        rate = accel * t_acc
+    total = span / rate + t_acc
+
+    def done(t):
+        if t < t_acc:
+            return 0.5 * accel * t * t
+        if t > total - t_acc:
+            return span - 0.5 * accel * (total - t) ** 2
+        return 0.5 * accel * t_acc * t_acc + rate * (t - t_acc)
+
+    n = max(1, math.ceil(total / TICK_S))
+    return [min(1.0, done(i * total / n) / span) for i in range(1, n + 1)]
+
+
+def ease(n):
+    """n fractions along an S-curve (slow, faster, slow): for the gripper's timed moves."""
+    return [0.5 - 0.5 * math.cos(math.pi * i / n) for i in range(1, n + 1)]
 REST_SETTLE_S = 1.0  # let the arm stop at the rest pose before cutting PWM
 
 
@@ -126,13 +173,14 @@ class Arm:
         self.geometry = main_cfg["arm"]
         self.joints = {j["name"]: j for j in main_cfg["joints"]["list"][:3]}
         by_name = {j["name"]: j for j in main_cfg["joints"]["list"]}
-        self.held = [(by_name[name], deg) for name, deg in vcfg["hold_servo_deg"].items()]
+        hold = {k: v for k, v in vcfg["hold_servo_deg"].items() if not k.startswith("_")}  # "_..." are comments
+        self.held = [(by_name[name], deg) for name, deg in hold.items()]
         rest = vcfg["rest_servo_deg"]
-        self.rest_held = [(by_name[name], rest[name]) for name in vcfg["hold_servo_deg"]]
+        self.rest_held = [(by_name[name], rest[name]) for name in hold]
         self.rest_gripper_deg = rest["gripper"]
         self.neutral = vcfg["neutral_servo_deg"]
         # Wrist pitch above 90 tips the tool down from the forearm line.
-        self.tool_pitch = vcfg["hold_servo_deg"]["wrist_pitch"] - 90
+        self.tool_pitch = hold["wrist_pitch"] - 90
         d = vcfg["directions"]
         self.signs = {"base": d["base_right_sign"], "shoulder": d["shoulder_forward_sign"],
                       "elbow": d["elbow_down_sign"]}
@@ -145,9 +193,19 @@ class Arm:
         self.free_rate = vcfg["approach"]["ramp_deg_per_s"]
         self.carry_rate = vcfg["grip"]["carry_deg_per_s"]
         self.rate = self.free_rate
+        m = vcfg["motion"]
+        self.free_accel, self.carry_accel = m["accel_deg_per_s2"], m["carry_accel_deg_per_s2"]
+        self.accel = self.free_accel
+        self.grip_deg = self.grip_angle(vcfg["grip"].get("width_mm"))
+        # Optional two-speed close (grip slow_from_deg): quick down to that angle, which must be
+        # wider than the object, then slowly through the contact so the first jaw to touch does
+        # not flick a light object out of the gripper.
+        self.slow_from = vcfg["grip"].get("slow_from_deg")
+        self.slow_rate = vcfg["grip"].get("slow_deg_per_s", 40.0)
         self.start = {name: float(self.signs[name] * (deg - self.neutral[name]))
                       for name, deg in vcfg["start_servo_deg"].items()}
         self.pose = dict(self.start)
+        self.search_turn = 0  # index into approach search_base_deg: where the search is looking
         self.rest = {name: float(self.signs[name] * (rest[name] - self.neutral[name]))
                      for name in self.start}
 
@@ -168,14 +226,16 @@ class Arm:
         return (g["upper_arm_mm"] * math.sin(lean) + g["forearm_mm"] * math.cos(tilt)
                 + g["tool_length_mm"] * math.cos(tilt + math.radians(self.tool_pitch)))
 
-    def allowed(self, deltas, min_tip=None):
-        """Clip a move to the travel limits; returns the new pose, or None at the height floor."""
+    def allowed(self, deltas, min_tip=None, start=None):
+        """Clip a move from start (default: the current pose) to the travel limits; returns
+        the new pose, or None at the height floor."""
         min_tip = self.min_tip if min_tip is None else min_tip
-        pose = dict(self.pose)
+        start = self.pose if start is None else start
+        pose = dict(start)
         for name, delta in deltas.items():
             lo, hi = self.ranges[name]
             pose[name] = min(hi, max(lo, pose[name] + delta))
-        lowering = self.tip_height(pose) < self.tip_height(self.pose)
+        lowering = self.tip_height(pose) < self.tip_height(start)
         if lowering and self.tip_height(pose) < min_tip:
             return None
         return pose
@@ -210,9 +270,8 @@ class Arm:
         for j, deg in targets:
             us = self.pca.read_pulse_us(j["channel"])
             now = deg if us is None else us_to_angle(j["type"], us)
-            steps = max(1, math.ceil(abs(deg - now) / (self.rate * TICK_S)))
-            for i in range(1, steps + 1):
-                self.pca.set_pulse_us(j["channel"], angle_to_us(j["type"], now + (deg - now) * i / steps))
+            for f in motion_profile(abs(deg - now), self.rate, self.accel):
+                self.pca.set_pulse_us(j["channel"], angle_to_us(j["type"], now + (deg - now) * f))
                 if not self.dry_run:
                     time.sleep(TICK_S)
 
@@ -239,42 +298,91 @@ class Arm:
         self.read_pose()
         self.ramp(self.rest)
         self.ramp_held(self.rest_held)
-        self.set_gripper(self.rest_gripper_deg)
-        self.rate = self.free_rate
+        print("  Rest pose: opening the gripper, anything it holds is dropped here.")
+        self.set_gripper(self.rest_gripper_deg, self.gripper.get("open_s", 0.0))
+        self.rate, self.accel = self.free_rate, self.free_accel
         if not self.dry_run:
             time.sleep(REST_SETTLE_S)
             self.pca.all_off()
 
     def ramp(self, target):
-        start = dict(self.pose)
-        span = max(abs(target[k] - start[k]) for k in target)
-        steps = max(1, math.ceil(span / (self.rate * TICK_S)))
-        for i in range(1, steps + 1):
-            self.send({k: start[k] + (target[k] - start[k]) * i / steps for k in target})
+        """Move every joint to target together, speeding up and slowing down smoothly."""
+        self.follow([target])
+
+    def follow(self, path):
+        """Move through a list of poses as one smooth move: one speed-up at the start and one
+        slow-down at the end, instead of stopping at every pose. The joint that moves the
+        most sets the pace (rate, accel)."""
+        points = [dict(self.pose)] + [dict(p) for p in path]
+        lengths = [max(abs(b[k] - a[k]) for k in b) for a, b in zip(points, points[1:])]
+        total = sum(lengths)
+        if total <= 0:
+            self.send(points[-1])
+            return
+        seg, before = 0, 0.0  # current segment, and the distance done before it
+        for f in motion_profile(total, self.rate, self.accel):
+            s = f * total
+            while seg < len(lengths) - 1 and s > before + lengths[seg]:
+                before += lengths[seg]
+                seg += 1
+            t = 1.0 if lengths[seg] == 0 else min(1.0, (s - before) / lengths[seg])
+            a, b = points[seg], points[seg + 1]
+            self.send({k: a[k] + (b[k] - a[k]) * t for k in b})
             if not self.dry_run:
                 time.sleep(TICK_S)
 
-    def set_gripper(self, deg, over_s=0.0):
-        """Move the gripper; over_s > 0 closes it gradually so one jaw does not knock the object away."""
+    def grip_angle(self, width_mm=None):
+        """Gripper angle that closes the jaws squeeze_mm narrower than an object width_mm wide
+        (jaws assumed to open evenly with the angle, from jaw_closed_deg = touching to open_deg
+        = jaw_open_mm apart). Never below safe_min_deg, where the SG90 stalls and can burn
+        out; without a width, the fixed grip_deg."""
         g = self.gripper
+        if width_mm is None:
+            deg = g["grip_deg"]
+        else:
+            frac = max(0.0, width_mm - g["squeeze_mm"]) / g["jaw_open_mm"]
+            deg = g["jaw_closed_deg"] + frac * (g["open_deg"] - g["jaw_closed_deg"])
+        return min(g["open_deg"], max(g["safe_min_deg"], deg))
+
+    def set_gripper(self, deg, over_s=0.0, settle=True):
+        """Move the gripper along an S-curve over over_s seconds (slow start, slow finish), so
+        one jaw does not knock the object away; 0 or an unknown start angle jumps there."""
+        g = self.gripper
+        deg = max(g["safe_min_deg"], deg)  # never command a stall angle
         start = getattr(self, "gripper_deg", None)
         steps = max(1, int(over_s / TICK_S)) if over_s and start is not None else 1
-        for i in range(1, steps + 1):
-            now = deg if steps == 1 else start + (deg - start) * i / steps
+        for f in [1.0] if steps == 1 else ease(steps):
+            now = deg if steps == 1 else start + (deg - start) * f
             self.pca.set_pulse_us(g["channel"], angle_to_us(g["type"], now))
             if steps > 1 and not self.dry_run:
                 time.sleep(TICK_S)
         self.gripper_deg = deg
-        if not self.dry_run:
+        if settle and not self.dry_run:
             time.sleep(g["settle_s"])
 
     def open_gripper(self):
-        self.set_gripper(self.gripper["open_deg"])
-        self.rate = self.free_rate
+        if getattr(self, "gripper_deg", None) is not None and self.gripper_deg < self.gripper["open_deg"] - 1:
+            print("  Opening the gripper.")
+        self.set_gripper(self.gripper["open_deg"], self.gripper.get("open_s", 0.0))
+        self.rate, self.accel = self.free_rate, self.free_accel
+
+    def gripper_report(self, label):
+        """Print what the chip is really sending to the gripper: shows that the PWM is still on."""
+        g = self.gripper
+        us = self.pca.read_pulse_us(g["channel"])
+        asked = angle_to_us(g["type"], self.gripper_deg)
+        state = "OFF (the gripper is limp)" if us is None else f"sending {us:.0f} us"
+        print(f"  Gripper {label}: commanded {self.gripper_deg:.0f} deg ({asked:.0f} us), chip {state}.")
 
     def close_gripper(self):
-        self.set_gripper(self.gripper["grip_deg"], self.gripper.get("close_s", 0.0))
-        self.rate = self.carry_rate  # jerks can knock a held object loose
+        print(f"  Closing the gripper to {self.grip_deg:.0f} deg.")
+        if self.slow_from is not None and self.grip_deg < self.slow_from < self.gripper["open_deg"]:
+            self.set_gripper(self.slow_from, self.gripper.get("close_s", 0.0), settle=False)
+            self.set_gripper(self.grip_deg, (self.slow_from - self.grip_deg) / self.slow_rate)
+        else:
+            self.set_gripper(self.grip_deg, self.gripper.get("close_s", 0.0))
+        self.gripper_report("closed")
+        self.rate, self.accel = self.carry_rate, self.carry_accel  # jerks can knock a held object loose
 
     def relax_gripper(self):
         if not self.dry_run:
@@ -318,27 +426,33 @@ class Detector:
         self.cfg = vcfg["detection"]
         self.class_name = class_name
         self.show = show
-        self.flip = not vcfg["directions"]["image_upright"]
+        self.turn = image_turn(vcfg["directions"])
         self.aruco = aruco_detector(main_cfg["aruco"]["dictionary"])
         self.marker_id = main_cfg["aruco"]["tray_marker_id"]
         self.cam = cam or open_camera(main_cfg["camera"])
+        self.frame_delay_s = main_cfg["camera"].get("frame_delay_s", 0.0)
 
     def look_marker(self, status):
         """Like look, for the destination marker."""
         return self.look(status, self.find_marker, f"marker {self.marker_id}")
 
     def look(self, status, find=None, label=None):
-        """Newest frame -> (confidence, u_frac, v_frac, area_frac), or None if not seen."""
+        """Newest frame -> (confidence, u_frac, v_frac, area_frac), or None if not seen. Finders that
+        know the object's real size add (mm across the image, mm down the image) at the object."""
         import cv2
 
+        # The camera runs behind: a frame that arrives now was taken a while ago, maybe while
+        # the arm was still moving. Skip frames until frame_delay_s after this call.
+        asked = time.monotonic()
         while True:
             try:
                 frame = self.cam.read()
-                break
             except RuntimeError:
                 print("  Waiting for the camera...")
-        if self.flip:
-            frame = cv2.rotate(frame, cv2.ROTATE_180)
+                continue
+            if time.monotonic() - asked >= self.frame_delay_s:
+                break
+        frame = turn_frame(frame, self.turn)
         find = find or (self.find_guess if self.guess else self.find_color if self.use_color else self.find_yolo)
         best, best_box = find(frame)
         publish = getattr(self.cam, "publish", None)  # the dashboard's shared camera
@@ -371,7 +485,41 @@ class Detector:
                 return (1.0, u, v, area), (int(x1), int(y1), int(x2), int(y2))
         return None, None
 
+    def find_yolo_box(self, frame):
+        """Position = the centre of YOLO's best box for this class, whatever its size:
+        ((x1 + x2) / 2, (y1 + y2) / 2) of the box. No colour gate or confirmation. If the class has
+        a size ruler (circle pair), its mm sizes are added for the landing point, but it never
+        moves the position."""
+        h, w = frame.shape[:2]
+        result = self.model.predict(frame, imgsz=self.cfg["imgsz"], conf=0.1, device="cpu", verbose=False)[0]
+        best, best_box = None, None
+        for box in result.boxes:
+            if result.names[int(box.cls[0])] != self.class_name:
+                continue
+            x1, y1, x2, y2 = (float(v) for v in box.xyxy[0].tolist())
+            conf = float(box.conf[0])
+            if best is None or conf > best[0]:
+                best = (conf, (x1 + x2) / 2 / w, (y1 + y2) / 2 / h, (x2 - x1) * (y2 - y1) / (w * h))
+                best_box = (int(x1), int(y1), int(x2), int(y2))
+        if best is None:
+            return None, None
+        palette = self.palette["classes"].get(self.class_name, {})
+        if palette.get("circles"):
+            ruler, _ = self.find_circle_pair(frame, palette, best[1:3])
+            if ruler is not None and len(ruler) > 4:
+                # YOLO's box and the circle pair agree on where the module is: full confidence.
+                # follow_confidence 1.0 then means "only trust a detection the circles back up".
+                best = (1.0,) + best[1:] + tuple(ruler[4:])
+        elif palette.get("hsv_low"):
+            blob, _ = self.find_color(frame, best[1:3])  # a blob of the class colour at YOLO's centre
+            if blob is not None:
+                best = (1.0,) + best[1:]  # YOLO and the colour agree: full confidence
+        self.confirmed = best[0] >= self.cfg["follow_confidence"]
+        return best, best_box
+
     def find_yolo(self, frame):
+        if self.cfg.get("yolo_only"):
+            return self.find_yolo_box(frame)
         if self.verify_color:
             # The colour check takes 2 ms and YOLO about 700 ms, so only ask YOLO when there is a blob.
             from_yolo = self.cfg.get("position_source", "color") == "yolo"
@@ -404,8 +552,9 @@ class Detector:
             if from_yolo and best[3] <= self.cfg["max_box_area_frac"]:
                 # Position = centre of YOLO's box: ((x1 + x2) / 2, (y1 + y2) / 2). A box that
                 # covers most of the frame says nothing about where the object is, so then
-                # the colour blob gives the position instead.
-                return best, best_box
+                # the colour blob gives the position instead. The blob's mm sizes (the finder's
+                # size ruler, if it has one) are kept either way.
+                return (best + tuple(blob[4:]) if len(blob) > 4 else best), best_box
             return (best[0],) + blob[1:], blob_box
         return best, best_box
 
@@ -565,10 +714,14 @@ class Detector:
                 if cover < c["board_min_cover"]:
                     continue
                 u, v = (x1 + x2) / 2 / w, (y1 + y2) / 2 / h
+                # The circles' known spacing along the module's long side is a ruler: mm per
+                # pixel at the object's distance, so the landing point can be worked out in mm.
+                mm_px = c["circle_spacing_mm"] / math.hypot(x2 - x1, y2 - y1)
                 # Tracking: prefer the pair nearest the last position; otherwise the most board.
                 score = -math.hypot(u - near[0], v - near[1]) if near else cover
                 if best is None or score > best[0]:
-                    best = (score, (1.0, u, v, (xe - x0) * (ye - y0) / (w * h)), (x0, y0, xe, ye))
+                    best = (score, (1.0, u, v, (xe - x0) * (ye - y0) / (w * h), w * mm_px, h * mm_px),
+                            (x0, y0, xe, ye))
         if best is None or (near and -best[0] > NEAR_LIMIT):
             return None, None
         return best[1], best[2]
@@ -582,18 +735,25 @@ class Detector:
 
 
 def search_step(arm, vcfg):
-    """One step down the sweep; from the bottom, back to the start pose. True on that restart."""
+    """One step down the sweep. From the bottom, back up to the start pose turned to the next
+    base angle in search_base_deg, so the arm looks around, not only straight ahead.
+    True once every angle has been swept (one full look around)."""
     a = vcfg["approach"]
     deltas = {"elbow": a["search_elbow_step_deg"], "shoulder": a["search_shoulder_step_deg"]}
     target = arm.allowed(deltas, vcfg["limits"]["search_min_tip_mm"])
-    restarted = target is None or target == arm.pose
-    if restarted:
-        print("  Bottom of the sweep; starting again from the top.")
-        target = arm.start
+    looked_around = False
+    if target is None or target == arm.pose:
+        angles = a["search_base_deg"]
+        arm.search_turn = (arm.search_turn + 1) % len(angles)
+        looked_around = arm.search_turn == 0
+        lo, hi = arm.ranges["base"]
+        base = min(hi, max(lo, angles[arm.search_turn]))
+        print(f"  Bottom of the sweep; looking again from the top, base turned to {base:+.0f} deg.")
+        target = {**arm.start, "base": base}
     arm.ramp(target)
     if not arm.dry_run:
         time.sleep(a["search_settle_s"])
-    return restarted
+    return looked_around
 
 
 def aim_step(arm, det, vcfg, min_tip=None):
@@ -605,15 +765,18 @@ def aim_step(arm, det, vcfg, min_tip=None):
     a = vcfg["approach"]
     u_err = det[1] - a["target_u_frac"]
     v_err = det[2] - a["target_v_frac"]
+    # Lower down the camera sees a smaller patch of table, so the same turn moves the object
+    # further across the image: scale the corrections by height, or they overshoot and swing.
+    scale = min(1.0, arm.tip_height(arm.pose) / a["aim_ref_tip_mm"])
     deltas = {}
     if abs(u_err) > a["aim_deadband"]:
-        deltas["base"] = a["aim_turn_frac"] * a["base_deg_per_u"] * u_err
+        deltas["base"] = a["aim_turn_frac"] * a["base_deg_per_u"] * u_err * scale
     if abs(v_err) > a["aim_deadband"] and (a.get("aim_both_axes", True) or not deltas):
         # aim_both_axes false: turn the base first, slide only once it is lined up.
         # High in the image means it is further out. Shoulder and elbow turn by equal and
         # opposite amounts so the camera slides out or back without changing its tilt;
         # tilting instead would push the object off the top of the image.
-        step = a["aim_gain_deg"] * v_err
+        step = a["aim_gain_deg"] * v_err * scale
         deltas.update(shoulder=-step, elbow=step)
     if not deltas:
         return False
@@ -629,13 +792,25 @@ def aim_step(arm, det, vcfg, min_tip=None):
 
 
 def move_tip(arm, height_mm, reach_mm, step_mm=5.0):
-    """Move the tip in a straight line to this height and reach, in small steps."""
+    """Move the tip in a straight line to this height and reach: the line is worked out in
+    step_mm pieces first, then driven as one smooth move (arm.follow)."""
+    path, reached = tip_path(arm, height_mm, reach_mm, step_mm)
+    if path:
+        arm.follow(path)
+    if not reached:
+        print(f"  Stopped short: tip ~{arm.tip_height(arm.pose):.0f} mm high, "
+              f"{reach_mm - arm.reach(arm.pose):.0f} mm short of the reach.")
+    return reached
+
+
+def tip_path(arm, height_mm, reach_mm, step_mm):
+    """Poses along a straight tip line, without moving; and whether the line got there."""
+    path, pose = [], dict(arm.pose)
     for _ in range(60):
-        pose = arm.pose
         dz = height_mm - arm.tip_height(pose)
         dr = reach_mm - arm.reach(pose)
         if abs(dz) < 1.0 and abs(dr) < 1.0:
-            return
+            return path, True
         scale = min(1.0, step_mm / math.hypot(dz, dr))
         dz, dr = dz * scale, dr * scale
         # Numeric Jacobian of (height, reach) against (shoulder, elbow), per degree.
@@ -645,34 +820,61 @@ def move_tip(arm, height_mm, reach_mm, step_mm=5.0):
         det = zs * re - ze * rs
         if abs(det) < 1e-6:
             break
-        target = arm.allowed({"shoulder": (dz * re - ze * dr) / det, "elbow": (zs * dr - dz * rs) / det})
+        target = arm.allowed({"shoulder": (dz * re - ze * dr) / det, "elbow": (zs * dr - dz * rs) / det},
+                             start=pose)
         if target is None or target == pose:
             break
-        arm.ramp(target)
-    print(f"  Stopped short: tip ~{arm.tip_height(arm.pose):.0f} mm high, "
-          f"{reach_mm - arm.reach(arm.pose):.0f} mm short of the reach.")
+        path.append(target)
+        pose = target
+    return path, False
 
 
-def descend(arm, u, vcfg, v=None):
+def descend(arm, u, vcfg, v=None, view_mm=None):
     """Turn to the object once, then go down to grip height without looking again.
 
     u corrects the base turn; v, if given, corrects how far out the jaws go, so the small
-    error left after aiming is taken out here instead of with more looks.
+    error left after aiming is taken out here instead of with more looks. view_mm, the
+    (width, height) of table the image covers at the object, measured from the object's own
+    known size, turns that error into millimetres; without it the fixed base_deg_per_u and
+    mm_per_image_height estimates are used.
     """
     a = vcfg["approach"]
+    # The object is under the lens and the jaws sit behind it (gripper_offset_mm): go out
+    # over it above its height, then straight down.
+    # The camera looks further ahead of the jaws the higher it is, and the search stops at
+    # whatever height it first saw the object, so the offset follows the aiming height.
+    offset = a["gripper_offset_mm"] + a.get("gripper_offset_slope", 0.0) * (
+        arm.tip_height(arm.pose) - a.get("offset_ref_tip_mm", 130.0))
+    reach = arm.reach(arm.pose) + offset
+    if a.get("gripper_offset_slope"):
+        print(f"  Aimed from tip {arm.tip_height(arm.pose):.0f} mm: the jaws go {offset:.0f} mm out from the camera's view.")
+    if view_mm is not None:
+        side_mm = (u - a["target_u_frac"]) * view_mm[0]  # + = right of the aim point
+        reach += (a["target_v_frac"] - v) * view_mm[1]  # high in the image = further out
+        turn = math.degrees(math.atan2(side_mm, reach))
+        print(f"  Object {side_mm:+.0f} mm sideways, {reach:.0f} mm out (measured from its size).")
+    else:
+        turn = a["base_deg_per_u"] * (u - a["target_u_frac"])
+        if v is not None:
+            reach += (a["target_v_frac"] - v) * a.get("mm_per_image_height", 0.0)
     # base_offset_deg corrects a steady sideways miss of the jaws (positive turns right).
-    arm.ramp(arm.allowed({"base": a["base_deg_per_u"] * (u - a["target_u_frac"]) + a.get("base_offset_deg", 0.0)}))
-    # The object is under the lens and the jaws sit behind it: go out over it above
-    # its height, then straight down.
-    reach = arm.reach(arm.pose) + a["gripper_offset_mm"]
-    if v is not None:
-        reach += (a["target_v_frac"] - v) * a.get("mm_per_image_height", 0.0)  # high in the image = further out
+    arm.ramp(arm.allowed({"base": turn + a.get("base_offset_deg", 0.0)}))
     move_tip(arm, a["align_tip_mm"], reach)
     rate, arm.rate = arm.rate, a.get("final_descent_deg_per_s", arm.rate)  # slow near the object
+    # Past the shoulder and elbow limits the arm cannot get low: go down at the farthest
+    # reach it can hold at grip height instead of stalling high and gripping in the air.
+    farthest = reach
+    while farthest > 0 and not tip_path(arm, a["grip_tip_mm"], farthest, 5.0)[1]:
+        farthest -= 3.0
+    if farthest < reach - 2.0:
+        print(f"  {reach:.0f} mm out is past the arm's limit at grip height; going down at {farthest:.0f} mm "
+              f"instead. gripper_offset_mm is too big for this object (the jaws will land north of it).")
+        reach = farthest
     try:
         move_tip(arm, a["grip_tip_mm"], reach)
     finally:
         arm.rate = rate
+    return arm.tip_height(arm.pose) <= a["grip_tip_mm"] + a.get("grip_height_tolerance_mm", 8.0)
 
 
 def approach(arm, look, vcfg, clock=time.monotonic, max_sweeps=None):
@@ -680,7 +882,8 @@ def approach(arm, look, vcfg, clock=time.monotonic, max_sweeps=None):
 
     Returns (found, reason).
 
-    max_sweeps ends the search with "nothing found"; None keeps searching for good.
+    max_sweeps ends the search with "nothing found" after that many full looks around (every
+    base angle in search_base_deg swept top to bottom); None keeps searching for good.
     """
     a, d = vcfg["approach"], vcfg["detection"]
     sightings = []
@@ -708,9 +911,13 @@ def approach(arm, look, vcfg, clock=time.monotonic, max_sweeps=None):
             if len(sightings) >= a["commit_detections"]:
                 u = sum(s[1] for s in sightings) / len(sightings)
                 v = sum(s[2] for s in sightings) / len(sightings)
+                sized = [s[4:6] for s in sightings if len(s) >= 6]
+                view_mm = tuple(sum(k) / len(sized) for k in zip(*sized)) if sized else None
                 print(f"Detected {len(sightings)} times at u{u:.2f} v{v:.2f}. Going down.")
                 arm.aim_pose = dict(arm.pose)  # --teach comes back here to look again
-                descend(arm, u, vcfg, v)
+                if not descend(arm, u, vcfg, v, view_mm):
+                    return False, (f"the arm cannot get down that far out (tip stuck at ~{arm.tip_height(arm.pose):.0f} mm, "
+                                   f"{arm.reach(arm.pose):.0f} mm out): lower gripper_offset_mm")
                 return True, f"at grip height, tip ~{arm.tip_height(arm.pose):.0f} mm"
         elif last_seen is None:
             sweeps += search_step(arm, vcfg)
@@ -724,6 +931,7 @@ def approach(arm, look, vcfg, clock=time.monotonic, max_sweeps=None):
 def find_and_approach(arm, detector, vcfg, max_sweeps=None):
     """Run approach, going back to the start pose to look again whenever the object is lost."""
     detector.arm = arm
+    arm.search_turn = 0
     detector.confirmed, detector.track = False, None
     ok, reason = approach(arm, detector.look, vcfg, max_sweeps=max_sweeps)
     while reason == "object lost":
@@ -744,6 +952,7 @@ def grip_and_lift(arm, reason, vcfg):
     print("Lifting.")
     # Straight up, so the object is not dragged along the table.
     move_tip(arm, arm.tip_height(arm.pose) + g["lift_mm"], arm.reach(arm.pose))
+    arm.gripper_report("after the lift")
 
 
 def run_test(arm, detector, vcfg):
@@ -832,6 +1041,7 @@ def auto_run(arm, detector, vcfg, max_picks, wait_for_hand=True):
             arm.ramp(arm.start)
             arm.relax_gripper()
             print(f"Stopping: {reason}.")
+            detector.stop_reason = reason  # the dashboard shows it instead of a bare "not found"
             break
         grip_and_lift(arm, reason, vcfg)
         if not place_on_marker(arm, detector, vcfg, memory):
@@ -872,13 +1082,34 @@ def grip_test(arm, vcfg):
     arm.relax_gripper()
 
 
+def teach_look(arm, detector, jaw_reach, height):
+    """Rise straight up from the jaws to this tip height and step along the reach until the
+    object is clearly in view. Returns (step_mm, detections) or None if it never is."""
+    for step_mm in TEACH_STEPS_MM:
+        move_tip(arm, height, jaw_reach + step_mm)
+        if not arm.dry_run:
+            time.sleep(0.5)
+        detector.confirmed, detector.track = False, None
+        seen = [d for d in (detector.look(f"teaching, tip {height:.0f} mm, {step_mm:+.0f} mm") for _ in range(5)) if d]
+        if len(seen) >= 3:
+            return arm.reach(arm.pose) - jaw_reach, seen  # what the arm really moved, after any limits
+    return None
+
+
 def teach(arm, detector, vcfg, class_name, config_path):
-    """Learn where an object sits in the image when it is exactly between the jaws.
+    """Learn where the jaws are compared with what the camera sees, for one object.
 
     The arm aims and goes down as for a pick, without gripping. The user slides the object
-    to the centre of the open jaws; the arm goes back up to where it aimed and looks again.
-    That image position becomes this object's target, so later picks aim at it directly and
-    no camera-to-jaw distance has to be guessed.
+    to the centre of the open jaws, where the camera usually cannot see it. The arm then rises
+    and steps along the reach (TEACH_STEPS_MM) until the object is in view, at each of the tip
+    heights in approach teach_tip_mm. For objects whose real size the finder knows (the
+    HC-SR04's circle spacing), the step plus the object's offset from the image centre in mm
+    gives how far ahead of the jaws the camera looks. That grows with the height the arm aims
+    from (the camera looks forward, so a higher camera looks further ahead), and a pick aims
+    from whatever height the search happened to see the object at, so the offset is saved as a
+    straight line of the aiming height: gripper_offset_mm at offset_ref_tip_mm, and
+    gripper_offset_slope per mm of height. The sideways offset goes to base_offset_deg. Other
+    objects go back to the aiming pose instead and save where they appear there as the aim point.
     """
     print("Teach: the arm goes down beside the object without gripping.")
     arm.go_start()
@@ -889,24 +1120,71 @@ def teach(arm, detector, vcfg, class_name, config_path):
         return
     input("Slide the object so it sits centred between the open jaws, hands clear, then press Enter: ")
     a = vcfg["approach"]
-    move_tip(arm, a["align_tip_mm"], arm.reach(arm.pose))  # straight up, clear of the object
-    arm.ramp(arm.aim_pose)
-    if not arm.dry_run:
-        time.sleep(1.0)
-    detector.confirmed, detector.track = False, None
-    seen = [d for d in (detector.look("teaching") for _ in range(5)) if d]
-    if len(seen) < 3:
-        print("The object is not clearly visible from the aiming pose; nothing saved.")
-        return
-    u = sorted(d[1] for d in seen)[len(seen) // 2]
-    v = sorted(d[2] for d in seen)[len(seen) // 2]
-    print(f"Centred between the jaws, {class_name} appears at u{u:.3f} v{v:.3f} "
-          f"(was aiming for u{a['target_u_frac']:.3f} v{a['target_v_frac']:.3f}).")
-    if not ask(f"Save this as the aim point for {class_name}?"):
-        return
+    jaw_reach = arm.reach(arm.pose)
     raw = load_config(config_path)
     entry = raw.setdefault("objects", {}).setdefault(class_name, {}).setdefault("approach", {})
-    entry.update(target_u_frac=round(u, 4), target_v_frac=round(v, 4), base_offset_deg=0.0)
+    ref = a.get("offset_ref_tip_mm", 130.0)
+    rows = []  # (tip height, camera offset ahead of the jaws in mm, object sideways in mm)
+    for height in a.get("teach_tip_mm", [100.0, 140.0, 180.0]):
+        got = teach_look(arm, detector, jaw_reach, height)
+        if got is None:
+            print(f"  Tip {height:.0f} mm: the object was not seen from any point beside the jaws.")
+            continue
+        step_mm, seen = got
+        mid = lambda i: sorted(d[i] for d in seen)[len(seen) // 2]
+        if not all(len(d) >= 6 for d in seen):
+            rows = None  # no size ruler: the aim-point method below
+            break
+        u, v = mid(1), mid(2)
+        # The image centre is (how far below the centre the object shows - the step) beyond
+        # the jaws: stepping back 40 mm with the camera looking at the jaws shows the object
+        # 40 mm above the centre, which comes out as 0.
+        rows.append((arm.tip_height(arm.pose), (v - 0.5) * mid(5) - step_mm, (u - 0.5) * mid(4)))
+        print(f"  Tip {rows[-1][0]:.0f} mm: moved {step_mm:+.0f} mm along the reach, the object is "
+              f"{rows[-1][2]:+.0f} mm sideways and {(v - 0.5) * mid(5):+.0f} mm below the image centre "
+              f"-> the camera looks {rows[-1][1]:.0f} mm ahead of the jaws.")
+    if rows:
+        hs, xs = [r[0] for r in rows], [r[1] for r in rows]
+        mean_h, mean_x = sum(hs) / len(hs), sum(xs) / len(xs)
+        spread = sum((h - mean_h) ** 2 for h in hs)
+        slope = sum((h - mean_h) * (x - mean_x) for h, x in zip(hs, xs)) / spread if spread > 1.0 else 0.0
+        offset = mean_x + slope * (ref - mean_h)
+        if abs(slope) > MAX_TEACH_SLOPE:
+            # The camera looks forward, so the offset can only grow gently with height; a steep
+            # fit means the readings disagree (blur, the arm's tilt changing between looks).
+            print(f"  The slope {slope:+.2f} mm per mm is not believable (more than {MAX_TEACH_SLOPE}); using 0 and the mean offset.")
+            slope, offset = 0.0, mean_x
+        side_mm = sum(r[2] for r in rows) / len(rows)
+        # Jaws right of the camera's centre line: once a pick has centred the object, the
+        # base must turn left (negative) to bring the jaws over it.
+        turn = math.degrees(math.atan2(-side_mm, jaw_reach))
+        print(f"  -> gripper_offset_mm {offset:.0f} at tip {ref:.0f} mm plus {slope:+.2f} mm per mm of aiming height "
+              f"(was {a['gripper_offset_mm']:.0f} + {a.get('gripper_offset_slope', 0.0):+.2f}), "
+              f"base_offset_deg {turn:+.1f} (was {a.get('base_offset_deg', 0.0):+.1f})")
+        if len(rows) < 2:
+            print("  Only one height worked, so the slope is not measured and stays 0.")
+        if not ask(f"Save these for {class_name}?"):
+            return
+        entry.update(gripper_offset_mm=round(offset, 1), gripper_offset_slope=round(slope, 3),
+                     offset_ref_tip_mm=ref, base_offset_deg=round(turn, 2), target_u_frac=0.5, target_v_frac=0.5)
+    elif rows is None:
+        arm.ramp(arm.aim_pose)
+        if not arm.dry_run:
+            time.sleep(1.0)
+        seen = [d for d in (detector.look("teaching") for _ in range(5)) if d]
+        if len(seen) < 3:
+            print("The object is not clearly visible from the aiming pose; nothing saved.")
+            return
+        u = sorted(d[1] for d in seen)[len(seen) // 2]
+        v = sorted(d[2] for d in seen)[len(seen) // 2]
+        print(f"Centred between the jaws, {class_name} appears at u{u:.3f} v{v:.3f} "
+              f"(was aiming for u{a['target_u_frac']:.3f} v{a['target_v_frac']:.3f}).")
+        if not ask(f"Save this as the aim point for {class_name}?"):
+            return
+        entry.update(target_u_frac=round(u, 4), target_v_frac=round(v, 4), base_offset_deg=0.0)
+    else:
+        print("The object was not seen at any height; nothing saved.")
+        return
     Path(config_path).write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"Saved to {config_path} (objects.{class_name}.approach).")
 
@@ -971,7 +1249,7 @@ def learn_color_command(main_cfg, vcfg, class_name, config_path):
 def apply_object_settings(vcfg, class_name):
     """Overlay the "objects" entry for this class on the shared sections, e.g. heights for a tall box."""
     for section, values in vcfg.get("objects", {}).get(class_name, {}).items():
-        if isinstance(values, dict):
+        if isinstance(values, dict) and not section.startswith("_"):  # "_note..." and "_old..." are comments
             vcfg[section].update({k: v for k, v in values.items() if not k.startswith("_")})
 
 
@@ -1000,7 +1278,8 @@ def direction_test(main_cfg, vcfg, config_path):
             arm.ramp({**home, name: home[name] + DIRECTION_TEST_DEG})
             d[key] = 1 if ask(question) else -1
             arm.ramp(home)
-        d["image_upright"] = ask("In --preview, is the image the right way up?")
+        if not ask("In --preview, is the image the right way round?"):
+            print("Set directions image_rotate_deg to the clockwise turn (90, 180 or 270) that makes it right.")
     finally:
         pca.close()
     d["confirmed"] = True
