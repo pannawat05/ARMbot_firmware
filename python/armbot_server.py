@@ -20,6 +20,10 @@ DELETE /api/queue/<id>, POST /api/stop, GET /stream.mjpg, GET /mqtt.json.
 MQTT (calibration/mqtt.json, skipped with --no-mqtt), with <p> the prefix ("armbot"):
   published, retained:  <p>/online "1"/"0", <p>/items, <p>/status (same JSON as the API)
   published:            <p>/event {"type": "queued"|"unknown", ...} after each queue command,
+                        <p>/unknown {"message": "Unknown object detected", "box": ..., ...} and
+                        <p>/unknown/image (JPEG with the box drawn) when a guess pick first
+                        sees an object that has no class; the clean image and a YOLO-format
+                        label are saved in captures/unknown/ (newest MAX_CAPTURES kept),
                         <p>/camera JPEG 320x240 every camera_every_s (default 1 s; 0 = off)
   subscribed:           <p>/cmd/queue {"item_id"|"barcode"|"text", "source"},
                         <p>/cmd/cancel {"id"}, <p>/cmd/stop {}
@@ -54,6 +58,8 @@ from servo_control_app import Pca9685  # noqa: E402
 INVENTORY = ROOT / "calibration" / "inventory.json"
 MQTT_CONFIG = ROOT / "calibration" / "mqtt.json"
 DIST = ROOT / "dashboard" / "dist"
+CAPTURES = ROOT / "captures" / "unknown"  # images and boxes of objects with no class
+MAX_CAPTURES = 200  # oldest are deleted beyond this; the SD card is nearly full
 CERT_DIR = ROOT / "python" / ".armbot_certs"
 STREAM_FPS = 8
 MAX_PICKS_PER_JOB = 20  # a queue command asking for more is cut to this
@@ -216,6 +222,7 @@ class Robot:
         self.model = None
         hw = self.main_cfg["hardware"]
         self.pca = Pca9685(hw["i2c_bus"], int(hw["pca9685_address"], 0), keep_outputs=True) if execute else DryRunQuiet()
+        self.on_unknown = None  # set by MqttBridge: callback(info, annotated_jpeg)
         self.wake = threading.Event()
         threading.Thread(target=self._worker, daemon=True).start()
 
@@ -318,6 +325,7 @@ class Robot:
                 self.model = YOLO(str(vp.rel(self.main_cfg["yolo"]["weights"])))
             detector = vp.Detector(self.main_cfg, vcfg, item["yolo_class"], False, item["color_only"],
                                    self.execute, cam=self.hub, model=self.model)
+            detector.on_unknown = lambda frame, best, box: self._unknown_seen(job, frame, best, box)
             arm = vp.Arm(self.pca, self.main_cfg, vcfg, dry_run=not self.execute)
             picks = vp.auto_run(arm, detector, vcfg, max_picks=1, wait_for_hand=False)
         except vp.StopRequested:
@@ -333,6 +341,36 @@ class Robot:
         if picks == 1:
             return True, "picked and placed"
         return False, getattr(detector, "stop_reason", None) or "not found"
+
+    def _unknown_seen(self, job, frame, best, box):
+        """An object with no class was seen: save the clean image with a YOLO-format label
+        (class 0, centre x y, width height, as fractions) for later training, and announce it."""
+        try:
+            import cv2
+
+            CAPTURES.mkdir(parents=True, exist_ok=True)
+            h, w = frame.shape[:2]
+            x1, y1, x2, y2 = (int(v) for v in box)
+            name = f"unknown-{time.strftime('%Y%m%d-%H%M%S')}-job{job['id']}"
+            cv2.imwrite(str(CAPTURES / f"{name}.jpg"), frame)
+            norm = [round(v, 4) for v in ((x1 + x2) / 2 / w, (y1 + y2) / 2 / h, (x2 - x1) / w, (y2 - y1) / h)]
+            (CAPTURES / f"{name}.txt").write_text("0 " + " ".join(f"{v:.4f}" for v in norm) + "\n")
+            for old in sorted(CAPTURES.glob("unknown-*.jpg"))[:-MAX_CAPTURES]:
+                old.unlink(missing_ok=True)
+                old.with_suffix(".txt").unlink(missing_ok=True)
+            shown = frame.copy()
+            cv2.rectangle(shown, (x1, y1), (x2, y2), (0, 0, 255), 3)
+            cv2.putText(shown, "Unknown object", (x1, max(18, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            info = {"type": "unknown_object", "message": "Unknown object detected", "time": time.time(),
+                    "job_id": job["id"], "image_size": [w, h],
+                    "box": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+                    "box_center_size": dict(zip(("cx", "cy", "w", "h"), norm)),
+                    "file": f"captures/unknown/{name}.jpg"}
+            print(f"Unknown object detected: box ({x1},{y1})-({x2},{y2}), saved {info['file']}.")
+            if self.on_unknown:
+                self.on_unknown(info, cv2.imencode(".jpg", shown, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes())
+        except Exception as e:  # a failed capture must never stop the pick
+            print(f"Unknown-object capture failed: {type(e).__name__}: {e}")
 
     def _rest(self):
         self.state = "resting"
@@ -364,7 +402,13 @@ class MqttBridge:
         self.client.reconnect_delay_set(1, 30)
         self.client.connect_async(cfg["host"], cfg["port"], keepalive=30)
         self.client.loop_start()
+        robot.on_unknown = self.unknown
         threading.Thread(target=self._publisher, daemon=True).start()
+
+    def unknown(self, info, jpeg):
+        """Announce an object with no class: the details as JSON, then the image with its box."""
+        self._send("unknown", info)
+        self.client.publish(f"{self.p}/unknown/image", jpeg, qos=0)
 
     def _send(self, topic, body, retain=False):
         self.client.publish(f"{self.p}/{topic}", json.dumps(body, ensure_ascii=False), qos=1, retain=retain)

@@ -168,9 +168,9 @@ python3 servo_control_app.py
   there and powered. Recommended start: servo app, Standby, then **Close & hold** (exits while keeping PWM on slots 1-5).
 - `Pca9685(..., keep_outputs=True)` does not reset the chip if it is already running, so PWM held by another
   program is not cut on startup. The servo app itself still calls `all_off` when it opens, so the arm drops then.
-- Rest pose (added 2026-11-07, `rest_servo_deg`): servo angles base 90, shoulder 70, elbow 140, wrist roll 90,
-  wrist pitch 110, gripper 150 (arm raised skyward). After a pick run (not `--detect`), and on Ctrl+C, `q`,
-  SIGTERM or SIGQUIT, the arm ramps there, opens the gripper (dropping anything held), waits 1 s and cuts PWM to all servos (limp). A second Ctrl+C
+- Rest pose (added 2026-11-07, `rest_servo_deg`): servo angles base 90, shoulder 125, elbow 30, wrist roll 90,
+  wrist pitch 30, gripper 150 (changed 2026-11-14; before that 90, 70, 140, 90, 110, 150, the arm raised skyward). After a pick run (not `--detect`), and on Ctrl+C, `q`,
+  SIGTERM or SIGQUIT, the arm ramps there (wrist pitch, channel 5, first, then the other joints), opens the gripper (dropping anything held), waits 1 s and cuts PWM to all servos (limp). A second Ctrl+C
   during that move holds still. SIGHUP is not handled (it was swallowed in tests); SIGKILL/SIGSTOP cannot be.
   `--rest` goes there on its own; `go_start` now ramps from the real pulses instead of jumping.
 - The closed gripper keeps PWM on until release, in both visual_pick and the app (Grip holds; Ungrip opens and then relaxes).

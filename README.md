@@ -68,6 +68,8 @@ python python/robot_pipeline.py --dry-run --show
 | `armbot/status` | JSON `{"mode", "state", "jobs":[...], "log":[...]}` | 0 | ใช่ | เช็กทุก 1 วินาที และส่งเฉพาะตอนข้อมูลเปลี่ยน | สถานะแขนกลกับคิวงาน (ดูฟิลด์ในตารางถัดไป) |
 | `armbot/items` | JSON `{"items":[...]}` | 1 | ใช่ | ตอนต่อ broker ได้ และตอนรายการของเปลี่ยน เช่น stock ลดหลังหยิบสำเร็จ | รายการของจาก `calibration/inventory.json` มีฟิลด์ `id`, `name`, `name_th`, `zone`, `stock`, `barcode`, `aliases`, `picks` |
 | `armbot/event` | JSON `{"type":"queued","job":{...},"item":{...}}` หรือ `{"type":"unknown","query":{...}}` | 1 | ไม่ | หลังได้รับ `cmd/queue` ทุกครั้ง | ตอบกลับคำสั่งหยิบ: `queued` แปลว่าเข้าคิวแล้ว, `unknown` แปลว่าหาของไม่เจอ |
+| `armbot/unknown` | JSON `{"type":"unknown_object","message":"Unknown object detected","job_id","box":{"x1","y1","x2","y2"},"box_center_size":{"cx","cy","w","h"},"image_size":[w,h],"file","time"}` | 1 | ไม่ | เมื่อโหมดเดา ("ของอื่น") เห็นของที่ไม่มีคลาสครั้งแรกในงานหยิบนั้น | แจ้งว่าพบของที่ไม่รู้จัก พร้อมกรอบ (พิกเซล และแบบ YOLO เป็นสัดส่วนของภาพ) ภาพต้นฉบับกับไฟล์ label เก็บที่ `captures/unknown/` บน Pi |
+| `armbot/unknown/image` | ภาพ JPEG (binary) ที่วาดกรอบสีแดงแล้ว | 0 | ไม่ | ต่อจาก `armbot/unknown` ทันที | ภาพของชิ้นที่ไม่รู้จัก |
 | `armbot/camera` | ภาพ JPEG (binary) ขนาด 320×240 ประมาณ 10 KB | 0 | ไม่ | ทุก 1 วินาที | ภาพจากกล้องบนแขน สำหรับหน้า dashboard บน cloud |
 
 ## Pi รับเข้า (subscribe `armbot/cmd/#`): หน้าเว็บหรือเครื่องอื่นส่งมาสั่งงาน

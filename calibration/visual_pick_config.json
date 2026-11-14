@@ -16,13 +16,13 @@
     "wrist_pitch": 160,
     "_old_wrist_pitch": 150
   },
-  "_note_rest": "rest_servo_deg: servo angles (as in servo_control_app.py) for the raised rest pose used after a run and when the program is stopped.",
+  "_note_rest": "rest_servo_deg: servo angles (as in servo_control_app.py: base, shoulder, elbow, wrist roll, wrist pitch, gripper) for the rest pose used after a run, on Stop and on shutdown. The arm goes there, opens the gripper, then every servo is cut (limp). 2026-11-14: (90, 125, 30, 90, 30, 150); before that (90, 70, 140, 90, 110, 150), the raised pose.",
   "rest_servo_deg": {
     "base": 90,
-    "shoulder": 70,
-    "elbow": 140,
+    "shoulder": 125,
+    "elbow": 30,
     "wrist_roll": 90,
-    "wrist_pitch": 110,
+    "wrist_pitch": 30,
     "gripper": 150
   },
   "directions": {
@@ -305,7 +305,9 @@
       "limits": {
         "min_tip_height_mm": 24.0
       },
-      "_note_grip_tip": "grip_tip_mm 30 and min_tip_height_mm 24 (same as the HC-SR04): at the shared 38 the jaws stop about 10 mm above the table, which misses anything low. 2026-11-13."
+      "_note_grip_tip": "grip_tip_mm 30 and min_tip_height_mm 24 (same as the HC-SR04): at the shared 38 the jaws stop about 10 mm above the table, which misses anything low. 2026-11-13.",
+      "offsets_from": "ultrasonic_hc-sr04",
+      "_note_offsets": "offsets_from: the guess takes gripper_offset_mm, base_offset_deg, slope and reference height from the HC-SR04's approach, so tuning the HC-SR04 tunes the guess too (2026-11-14: the guess was still on the shared 60 mm / 0 deg while the HC-SR04 had been tuned). Remove offsets_from to give it its own."
     }
   },
   "guess": {

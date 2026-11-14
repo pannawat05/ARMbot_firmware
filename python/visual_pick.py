@@ -14,7 +14,7 @@ Usage (run with the .venv-cpu interpreter):
   python visual_pick.py bananapi --detect --show --execute   # move toward the object, no grip
   python visual_pick.py --direction-test            # once: learn which way each servo moves
   python visual_pick.py --standby                   # ramp back to the start pose from wherever it stopped
-  python visual_pick.py --rest                      # ramp to the raised rest pose
+  python visual_pick.py --rest                      # ramp to the rest pose (rest_servo_deg), then go limp
   python visual_pick.py bananapi --learn-color      # save an object's colour from the camera
   python visual_pick.py relay_module --teach --show --execute   # learn where the jaws' centre is in the image
   python visual_pick.py --grip-test                 # check a hand-placed object stays gripped through moves
@@ -33,7 +33,7 @@ Safety:
   height never goes below min_tip_height_mm. The way down is blind: the gripper
   closes at grip height whether or not the object is there.
 - After a pick run, and on Ctrl+C, q in the camera window, SIGTERM or SIGQUIT,
-  the arm ramps to the raised rest pose (rest_servo_deg), opens the gripper and then
+  the arm ramps to the rest pose (rest_servo_deg), opens the gripper and then
   cuts PWM to every servo (limp); an object still held is dropped there. A second Ctrl+C during that move holds the arm
   still instead. SIGKILL and SIGSTOP cannot be caught, so the arm just holds its pose.
 
@@ -294,10 +294,13 @@ class Arm:
         self.go_start()
 
     def go_rest(self):
-        """Arm raised skyward (rest_servo_deg), open the gripper, then go limp. Ignores the work limits."""
+        """Go to the rest pose (rest_servo_deg), open the gripper, then go limp. Ignores the work limits."""
         self.read_pose()
+        # Wrist pitch first: it lifts the whole tool, so the other joints then move with the
+        # gripper already raised instead of dragging it across the table.
+        self.ramp_held([h for h in self.rest_held if h[0]["name"] == "wrist_pitch"])
         self.ramp(self.rest)
-        self.ramp_held(self.rest_held)
+        self.ramp_held([h for h in self.rest_held if h[0]["name"] != "wrist_pitch"])
         print("  Rest pose: opening the gripper, anything it holds is dropped here.")
         self.set_gripper(self.rest_gripper_deg, self.gripper.get("open_s", 0.0))
         self.rate, self.accel = self.free_rate, self.free_accel
@@ -397,6 +400,8 @@ class Detector:
         self.guess_cfg = vcfg["guess"]
         self.aim = (vcfg["approach"]["target_u_frac"], vcfg["approach"]["target_v_frac"])
         self.arm = None  # set by find_and_approach, so the guess can tell the arm's own parts
+        self.on_unknown = None  # callback(frame, detection, box) for the first sighting of a guess object
+        self.unknown_reported = False
         self.marker_finder = None  # blur-tolerant ArUco detector for the guess, made on first use
         self.self_spots = []  # image spots that stayed put while the arm moved: part of the arm
         self.seen = []  # (pose, u, v) since the guess started following its current spot
@@ -455,6 +460,13 @@ class Detector:
         frame = turn_frame(frame, self.turn)
         find = find or (self.find_guess if self.guess else self.find_color if self.use_color else self.find_yolo)
         best, best_box = find(frame)
+        # First sighting of an object with no class on this approach: hand the clean frame and
+        # its box to the caller (the dashboard server saves it and announces it over MQTT).
+        if best and best_box and find == self.find_guess and not self.unknown_reported \
+                and best[0] >= self.cfg["follow_confidence"]:
+            self.unknown_reported = True
+            if self.on_unknown:
+                self.on_unknown(frame.copy(), best, best_box)
         publish = getattr(self.cam, "publish", None)  # the dashboard's shared camera
         if self.show or publish:
             if best_box:
@@ -932,6 +944,7 @@ def find_and_approach(arm, detector, vcfg, max_sweeps=None):
     """Run approach, going back to the start pose to look again whenever the object is lost."""
     detector.arm = arm
     arm.search_turn = 0
+    detector.unknown_reported = False
     detector.confirmed, detector.track = False, None
     ok, reason = approach(arm, detector.look, vcfg, max_sweeps=max_sweeps)
     while reason == "object lost":
@@ -1246,8 +1259,19 @@ def learn_color_command(main_cfg, vcfg, class_name, config_path):
         print(f"Saved to {config_path}. YOLO picks of {class_name} are now confirmed by this colour.")
 
 
+OFFSET_KEYS = ("gripper_offset_mm", "gripper_offset_slope", "offset_ref_tip_mm", "base_offset_deg")
+
+
 def apply_object_settings(vcfg, class_name):
-    """Overlay the "objects" entry for this class on the shared sections, e.g. heights for a tall box."""
+    """Overlay the "objects" entry for this class on the shared sections, e.g. heights for a tall box.
+
+    An entry with "offsets_from": "<other class>" first takes that class's camera-to-jaw offsets
+    (OFFSET_KEYS in its approach): the offsets belong to the camera and gripper, not to the
+    object, so an object that cannot be taught, such as the guess, follows the tuned class."""
+    donor = vcfg.get("objects", {}).get(class_name, {}).get("offsets_from")
+    if donor:
+        taken = vcfg.get("objects", {}).get(donor, {}).get("approach", {})
+        vcfg["approach"].update({k: taken[k] for k in OFFSET_KEYS if k in taken})
     for section, values in vcfg.get("objects", {}).get(class_name, {}).items():
         if isinstance(values, dict) and not section.startswith("_"):  # "_note..." and "_old..." are comments
             vcfg[section].update({k: v for k, v in values.items() if not k.startswith("_")})
@@ -1301,7 +1325,7 @@ def main():
     ap.add_argument("--grip-test", action="store_true",
                     help="hold a hand-placed object through base and reach moves, no camera")
     ap.add_argument("--standby", action="store_true", help="ramp back to the start pose and exit")
-    ap.add_argument("--rest", action="store_true", help="ramp to the raised rest pose and exit")
+    ap.add_argument("--rest", action="store_true", help="ramp to the rest pose (rest_servo_deg), go limp and exit")
     ap.add_argument("--camera", choices=("serial", "usb"), help="override camera.source in the config")
     ap.add_argument("--trust-yolo", action="store_true", help="allow --execute on a class with no colour to confirm it")
     ap.add_argument("--teach", action="store_true",

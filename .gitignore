@@ -1,3 +1,4 @@
 python/.armbot_certs/
 calibration/mqtt.json
 calibration/mqtt.panplay.json
+captures/

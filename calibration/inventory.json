@@ -24,7 +24,7 @@
       "yolo_class": "ultrasonic_hc-sr04",
       "color_only": true,
       "zone": "A2",
-      "stock": 7,
+      "stock": 5,
       "barcode": "ARM-0002",
       "aliases": [
         "อัลตราโซนิก",
@@ -34,7 +34,7 @@
         "hc-sr04",
         "hc sr04"
       ],
-      "picks": 44
+      "picks": 46
     },
     {
       "id": "bananapi",
@@ -61,7 +61,7 @@
       "yolo_class": "unknown",
       "color_only": true,
       "zone": "C1",
-      "stock": 10,
+      "stock": 5,
       "barcode": "ARM-0099",
       "aliases": [
         "ของอื่น",
@@ -70,7 +70,7 @@
         "unknown",
         "any object"
       ],
-      "picks": 2
+      "picks": 7
     }
   ]
 }
